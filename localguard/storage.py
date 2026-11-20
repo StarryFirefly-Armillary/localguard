@@ -112,11 +112,21 @@ class Store:
         result = self.get(audit_id,session)
         if decision not in ('confirmed','false_positive','unreviewed'):
             raise ValueError('Invalid review decision')
-        if issue_id not in {i['id'] for i in result['issues']}:
+        issue = next((i for i in result['issues'] if i['id'] == issue_id), None)
+        if issue is None:
             raise ValueError('Unknown issue_id')
+        triage = issue.get('triage')
+        overridden = bool(triage and (
+            (decision == 'false_positive' and triage['verdict'] == 'likely_true') or
+            (decision == 'confirmed' and triage['verdict'] == 'likely_false')))
+        if triage and overridden:
+            triage['overridden'] = True
+            issue['triage'] = triage
         with self.connect() as db:
             db.execute('INSERT OR REPLACE INTO reviews VALUES(?,?,?)',(audit_id,issue_id,decision))
-        self.log(event='human_review',audit_id=audit_id,issue_id=issue_id,decision=decision,session=session)
+        self.log(event='human_review',audit_id=audit_id,issue_id=issue_id,decision=decision,
+                 session=session, overruled_model=overridden,
+                 model_verdict=triage['verdict'] if triage else None)
 
     @asynccontextmanager
     async def resource(self):

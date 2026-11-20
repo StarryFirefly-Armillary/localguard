@@ -242,7 +242,9 @@
     if (!$('target').reportValidity()) return null;
     const target = $('target').value.trim();
     if (!target) { $('target').setCustomValidity('请输入目标仓库或目录路径。'); $('target').reportValidity(); return null; }
-    const args = { target, model_tier: $('model-tier').value };
+    const args = { target, model_tier: $('model-tier').value,
+                   auto_exclude: $('auto-exclude').checked,
+                   model_triage: $('model-triage').checked };
     const excluded = $('exclude-paths').value.split(',').map((s) => s.trim()).filter(Boolean);
     if (excluded.length) args.exclude_paths = excluded;
     return args;
@@ -473,12 +475,17 @@
     const focusKey = focus?.dataset?.focusKey;
     const severityFilter = state.severity;
     const reviewFilter = $('review-filter').value;
+    const triageFilter = $('triage-filter').value;
     const search = $('issue-search').value.trim().toLocaleLowerCase();
     const all = issues();
     const filtered = all.filter((issue) => {
       const searchable = [issue.title, issue.id, issue.cwe, issue.category, ...locationsOf(issue).map((location) => location.path)].join(' ').toLocaleLowerCase();
-      return (severityFilter === 'all' || severity(issue) === severityFilter) && (reviewFilter === 'all' || reviewOf(issue) === reviewFilter) && (!search || searchable.includes(search));
-    }).sort((a, b) => SEVERITY_ORDER.indexOf(severity(a)) - SEVERITY_ORDER.indexOf(severity(b)) || (Number(b.confidence) || 0) - (Number(a.confidence) || 0) || text(locationsOf(a)[0]?.path).localeCompare(text(locationsOf(b)[0]?.path)));
+      const verdict = issue.triage?.verdict || 'none';
+      return (severityFilter === 'all' || severity(issue) === severityFilter)
+        && (reviewFilter === 'all' || reviewOf(issue) === reviewFilter)
+        && (triageFilter === 'all' || verdict === triageFilter)
+        && (!search || searchable.includes(search));
+    });
     $('issue-count').textContent = String(all.length);
     $('results-note').textContent = state.audit ? `显示 ${filtered.length} / ${all.length} 项${isActive() ? ' · 初步结果，仍在更新' : ''}${state.audit.truncated ? ' · 已截断' : ''}` : '按风险等级、置信度与文件排序';
     list.replaceChildren();
@@ -526,6 +533,14 @@
     const card = node('article', `issue-card severity-${level}${state.selectedIssue === id ? ' selected' : ''}${decision === 'false_positive' ? ' false-positive' : ''}`);
     const top = node('div', 'issue-topline');
     top.append(node('span', `badge severity-${level}`, SEVERITIES[level]), node('span', 'issue-category', CATEGORIES[issue.category] || text(issue.category, '未分类')));
+    const triage = issue.triage;
+    if (triage && triage.verdict) {
+      const labels = { likely_true: '模型：可能是真的', likely_false: '模型：可能误报', uncertain: '模型：不确定' };
+      const badge = node('span', `badge triage-${triage.verdict}${triage.overridden ? ' triage-overridden' : ''}`,
+                         (labels[triage.verdict] || '模型分诊') + (triage.overridden ? ' · 已人工推翻' : ''));
+      badge.title = text(triage.reason, '');
+      top.append(badge);
+    }
     if (typeof issue.confidence === 'number' && Number.isFinite(issue.confidence)) top.append(node('span', 'issue-confidence', `置信度 ${Math.round(Math.max(0, Math.min(1, issue.confidence)) * 100)}%`));
     card.append(top, node('h4', '', text(issue.title, '未命名问题')), node('p', 'issue-id mono', [id, text(issue.cwe)].filter(Boolean).join(' / ')));
     const locations = locationsOf(issue);
@@ -1045,6 +1060,7 @@
   });
   $('issue-search').addEventListener('input', renderIssues);
   $('review-filter').addEventListener('change', renderIssues);
+  $('triage-filter').addEventListener('change', renderIssues);
   $('refresh-tree').addEventListener('click', loadTree);
   $('toggle-tree').addEventListener('click', () => {
     const hidden = !$('file-tree-pane').hidden;

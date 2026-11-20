@@ -43,7 +43,9 @@
         </select>
         <p id="model-help" class="field-help">模型只做编排与解释，不生成问题定位。</p>
         <label class="field-label" for="exclude-paths">排除路径 <span class="label-note">逗号分隔，可选</span></label>
-        <input id="exclude-paths" name="exclude_paths" form="audit-form" type="text" placeholder="fixtures/, tests/, docs/" autocomplete="off" spellcheck="false" maxlength="2000">
+        <input id="exclude-paths" name="exclude_paths" form="audit-form" type="text" placeholder="额外排除的目录，逗号分隔" autocomplete="off" spellcheck="false" maxlength="2000">
+        <label class="check-row"><input id="auto-exclude" type="checkbox" checked><span>智能排除测试与生成目录</span></label>
+        <label class="check-row"><input id="model-triage" type="checkbox" checked><span>模型分诊（标记疑似误报）</span></label>
       </div>
 
       <section id="form-panel" role="tabpanel" aria-labelledby="form-tab">
@@ -145,7 +147,7 @@
           <div class="panel-heading"><h3 id="findings-title">问题与复核 <span id="issue-count" class="count-badge">0</span></h3><span class="section-kicker">TOOL EVIDENCE</span></div>
           <div class="findings-toolbar">
             <div id="severity-filters" class="severity-filters" role="group" aria-label="按严重程度筛选"><button type="button" data-severity="all" aria-pressed="true">全部</button><button type="button" data-severity="critical" aria-pressed="false">严重</button><button type="button" data-severity="high" aria-pressed="false">高危</button><button type="button" data-severity="medium" aria-pressed="false">中危</button><button type="button" data-severity="low" aria-pressed="false">低危</button><button type="button" data-severity="info" aria-pressed="false">提示</button></div>
-            <div class="filter-row"><label class="visually-hidden" for="issue-search">搜索标题、规则或文件路径</label><input id="issue-search" type="search" placeholder="搜索问题或文件…" maxlength="300"><label class="visually-hidden" for="review-filter">复核状态</label><select id="review-filter"><option value="all">全部复核状态</option><option value="unreviewed">待复核</option><option value="confirmed">已确认</option><option value="false_positive">误报</option></select></div>
+            <div class="filter-row"><label class="visually-hidden" for="issue-search">搜索标题、规则或文件路径</label><input id="issue-search" type="search" placeholder="搜索问题或文件…" maxlength="300"><label class="visually-hidden" for="triage-filter">模型分诊</label><select id="triage-filter"><option value="all">全部分诊</option><option value="likely_true">可能是真的</option><option value="likely_false">可能误报</option><option value="uncertain">不确定</option><option value="none">未分诊</option></select><label class="visually-hidden" for="review-filter">复核状态</label><select id="review-filter"><option value="all">全部复核状态</option><option value="unreviewed">待复核</option><option value="confirmed">已确认</option><option value="false_positive">误报</option></select></div>
           </div>
           <p id="results-note" class="results-note">按风险等级、置信度与文件排序</p>
           <div id="issues-list" class="issues-list"><div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M11 5h13l6 6v24H11V5Z" stroke="currentColor" stroke-width="1.5"/><path d="M24 5v7h6M16 18h9m-9 5h9m-9 5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div><h4>让每个结论都有据可查</h4><p>发起审查后，这里将展示工具验证的问题、真实文件定位与人工复核入口。</p><span class="empty-caption">没有示例数据，只有实际发现</span></div></div>

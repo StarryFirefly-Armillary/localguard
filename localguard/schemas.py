@@ -33,7 +33,11 @@ ISSUE = obj({
     'cwe': string(), 'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
     'locations': {**array(LOCATION), 'minItems': 1}, 'evidence': {**array(EVIDENCE), 'minItems': 1},
     'explanation': string(), 'remediation': string(), 'needs_human_review': BOOL,
-    'review': string(enum=['unreviewed', 'confirmed', 'false_positive'])
+    'review': string(enum=['unreviewed', 'confirmed', 'false_positive']),
+    'triage': obj({'verdict': string(enum=['likely_true', 'likely_false', 'uncertain']),
+                   'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
+                   'reason': string(), 'tier': string(), 'overridden': BOOL},
+                  ['verdict', 'confidence', 'reason', 'tier'])
 }, ['id', 'title', 'severity', 'category', 'cwe', 'confidence', 'locations', 'evidence', 'explanation', 'remediation', 'needs_human_review'])
 STATUS = obj({
     'audit_id': ID, 'status': string(enum=['queued', 'running', 'completed', 'failed']),
@@ -74,11 +78,12 @@ TOOLS = {
              'base_commit':string(pattern=r'^(?:[a-f0-9]{40}|[a-f0-9]{64})$'),'head_commit':string(pattern=r'^(?:[a-f0-9]{40}|[a-f0-9]{64})$'),
              'truncated':BOOL},['diff','changes','base_commit','head_commit','truncated'])),
     'audit_repository': tool(
-        'Queue an asynchronous security audit; immediately returns audit_id/status=queued and an empty issues array. Example target=C:/work,depth=standard,scanners=[patterns,semgrep],include_dependencies=true. Absolute allowlisted paths or allowlisted HTTPS Git URLs only (Git retrieval disabled in offline mode). Poll get_audit_status for validated issues, progress, coverage and queue_position. Form pipeline is deterministic; conversational selection uses local tools only. Unavailable scanners are reported, never hidden. No repository code is executed. exclude_paths optionally skips matching relative directories/files (e.g. fixtures/, tests/) to suppress intentional test samples; additive to .gitignore. resource_estimate optionally supplies scheduling hints, not permission to exceed host limits.',
+        'Queue an asynchronous security audit; immediately returns audit_id/status=queued and an empty issues array. Example target=C:/work,depth=standard,scanners=[patterns,semgrep],include_dependencies=true. Absolute allowlisted paths or allowlisted HTTPS Git URLs only (Git retrieval disabled in offline mode). Poll get_audit_status for validated issues, progress, coverage and queue_position. Form pipeline is deterministic; conversational selection uses local tools only. Unavailable scanners are reported, never hidden. No repository code is executed. auto_exclude defaults true and skips conventional test/fixture/generated directories, self-declared inert fixtures and non-source artifacts across ecosystems (reasons reported in warnings); set false to review everything. exclude_paths additionally skips matching relative directories/files; additive to .gitignore. model_triage defaults true: when a local model tier is active, the model additionally labels each finding likely_true/likely_false/uncertain with a reason for advisory reordering; it never removes findings or changes severity, humans can override, every verdict is logged. resource_estimate optionally supplies scheduling hints, not permission to exceed host limits.',
         obj({'target':TARGET,'depth':string(enum=['quick','standard','deep']),'scanners':{**array(string(enum=SCANNERS),7),'uniqueItems':True,'minItems':1},'include_dependencies':BOOL,'incremental':BOOL,
              'base':string(pattern=r'^[A-Za-z0-9][A-Za-z0-9_./~^+-]{0,159}$'),'head':string(pattern=r'^[A-Za-z0-9][A-Za-z0-9_./~^+-]{0,159}$'),
              'model_tier':string(enum=['rules','4gb','8gb']),
              'exclude_paths':{**array(string(minLength=1,maxLength=300,pattern=r'^[A-Za-z0-9_*?./\\-]+$'),100),'uniqueItems':True},
+             'auto_exclude':BOOL,'model_triage':BOOL,
              'resource_estimate':obj({'ram_mb':integer(0,32768),'vram_mb':integer(0,8192)},[])},['target']),deepcopy(STATUS)),
     'get_audit_status': tool(
         'Poll an audit owned by this client session. Example audit_id=32-character lowercase hex returned by audit_repository,wait_seconds=2,offset=0,limit=100. Returns status, queue_position, 0..100 progress, completed modules, coverage warnings and validated issues identical to the UI protocol. wait_seconds is bounded 0..30. Large reports are paginated; truncated=true and next_offset indicate remaining issues. Stale locations are flagged if the source changed since evidence was read.',

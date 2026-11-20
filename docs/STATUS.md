@@ -74,3 +74,26 @@ GGUF 转换用的是 b12568 工具链（含 `llama-quantize.exe`），与运行�
 ## 与旧记录的关系
 
 早前的 `adapter-r16` 只训练 5 步、零负样本，门控失败（`false_positive_rate: no measurable improvement`），**未部署**。本记录取代该结论：问题被诊断为数据失衡而非方法不可行，补齐真实负样本并平衡后门控通过。
+
+## 智能排除与 LLM 分诊（2026-11-21 凌晨）
+
+用户质疑：审查本项目报出 130 条问题无法逐条人工判断，而 LLM 只写解释不做甄别。为此新增两层能力。
+
+### 智能排除（auto_exclude，默认开启）
+
+`localguard/discovery.py`，跨生态通用、不硬编码任何项目特定路径。三类信号：
+1. 常规测试/夹具/生成目录名（pytest/jest/Go/Rust/Maven 等：`tests/`, `__tests__`, `spec/`, `fixtures/`, `mocks/`, `samples/`, `coverage/`, `dist/` 等）；
+2. 文件前 12 行的自声明（`STATIC FIXTURE ONLY` / `DO NOT EXECUTE` / `synthetic example` 等），即使样本不在测试目录也能识别；
+3. 已知非源码产物（lockfiles、`.min.js` 等）。
+
+排除结果按原因汇总进 warnings，用户可 `auto_exclude: false` 关闭，或用 `exclude_paths` 追加。保护机制：当审查目标本身就是测试目录（`is_test_root`），或目录里 ≥80% 文件都是自声明样本时，不做自动排除——明确指向样本库的审查不该被清空。实测审查本项目：130 → 0，且 warning 写明"conventional test/fixture directory: 68 file(s)"。
+
+### LLM 分诊（model_triage，默认开启）
+
+`explain_issues(..., triage=True)` 在**同一次模型调用**里让模型对每条已验证发现额外输出 `verdict`（likely_true / likely_false / uncertain）+ `confidence` + `reason`。
+
+严格边界：不删除任何 issue、不改严重度、不写行号（reason 中的坐标会被脱敏）；每条判断写 `model_triage` 审计日志；人工复核推翻时写 `human_review.overruled_model` 并标记 `triage.overridden`。模型分诊失败时**回退到纯解释**，绝不因为分诊错误丢掉确定性报告。UI 增加分诊徽章与"可能是真的/可能误报/不确定"筛选。
+
+实测（8gb CUDA、55 条 fixture 命中）：`coverage.model_triage: completed`，55 条全部标为 `likely_false`，理由如"源文件明确标记为静态测试用占位符…故意放置的测试数据"。这证明模型确实在做真假甄别，而非只润色文字。
+
+测试：`tests/test_discovery_and_triage.py`，全套 352 passed。
