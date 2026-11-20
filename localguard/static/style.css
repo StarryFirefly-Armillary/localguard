@@ -70,10 +70,6 @@ h4 { font-size: 14px; }
 .connection-status.disconnected { color: var(--amber); }
 .connection-status.disconnected .status-dot { background: var(--amber); }
 
-.notice-bar { display: flex; align-items: center; justify-content: center; min-height: 30px; padding: 5px 20px; background: var(--blue); color: #fff; font-size: 11px; letter-spacing: .01em; position: relative; }
-.notice-close { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: #fff; font-size: 17px; line-height: 1; padding: 0 4px; opacity: .85; }
-.notice-close:hover { opacity: 1; }
-
 .app-layout { display: grid; grid-template-columns: 296px minmax(0, 1fr); max-width: 1800px; margin: 0 auto; align-items: stretch; }
 .config-sidebar { background: var(--sidebar); border-right: 1px solid var(--line-soft); padding: 28px 20px 24px; }
 .section-heading { margin-bottom: 18px; }

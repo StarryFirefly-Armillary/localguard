@@ -1069,7 +1069,6 @@
   $('remove-image').addEventListener('click', clearImage);
   $('analyze-image').addEventListener('click', analyzeImage);
   $('export-report').addEventListener('click', exportReport);
-  $('notice-close').addEventListener('click', () => { const bar = document.querySelector('.notice-bar'); if (bar) bar.hidden = true; });
   window.addEventListener('beforeunload', () => { stopPolling(); if (state.imageUrl) URL.revokeObjectURL(state.imageUrl); });
   bootstrap();
 })();
