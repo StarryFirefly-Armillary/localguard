@@ -63,3 +63,6 @@ Thumbs.db
 
 # ---- WorkBuddy session-local data ----
 .workbuddy/
+
+# ---- Downloaded toolchain binaries ----
+llama-b*-bin-win-*.zip
