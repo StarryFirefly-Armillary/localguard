@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 from urllib.parse import urlsplit
 
@@ -68,8 +69,14 @@ class AuditEngine:
 
     @contextmanager
     def snapshot(self, root, revision=None):
-        with tempfile.TemporaryDirectory(prefix='scan-',dir=self.config.data_dir) as temp:
-            snapshot = Path(temp)
+        # Cleanup of the throwaway scan snapshot must never abort an audit. On
+        # Windows an OCaml scanner may leave read-only temp files, and a
+        # host-level rmtree shim can refuse bulk deletes. Neither affects the
+        # evidence already produced from the snapshot, so cleanup failures are
+        # contained here instead of escaping into the audit event loop.
+        temp = tempfile.mkdtemp(prefix='scan-',dir=self.config.data_dir)
+        snapshot = Path(temp)
+        try:
             if revision is not None:
                 hashes, skipped = write_revision_snapshot(root,snapshot,revision,self.registry.policy,self.config)
                 yield snapshot,hashes,skipped
@@ -99,6 +106,12 @@ class AuditEngine:
                 destination.write_bytes(data)
                 hashes[relative.as_posix()] = digest
             yield snapshot,hashes,skipped
+        finally:
+            try:
+                shutil.rmtree(temp,ignore_errors=True)
+            except BaseException:
+                # BaseException also covers SystemExit from host deletion shims.
+                pass
 
     async def scanner(self, scanner, target, ruleset='default'):
         from .scanners import run_scanner
