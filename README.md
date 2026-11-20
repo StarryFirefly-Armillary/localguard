@@ -90,7 +90,7 @@ python -m localguard --config localguard.example.json mcp
 }
 ```
 
-`tools/list` 暴露 8 个工具：`view_file`、`list_tree`、`get_ast`、`run_scanner`、`git_diff`、`audit_repository`、`get_audit_status`、`analyze_image`（内部 `rank_and_report` 不暴露）。描述中包含功能边界、参数示例、返回结构与限制，输入在 schema 层用 enum / pattern 约束，输出遵循严格 schema。
+`tools/list` 暴露 9 个工具：`view_file`、`list_tree`、`get_ast`、`run_scanner`、`git_diff`、`audit_repository`、`get_audit_status`、`analyze_image`、`clone_repository`（内部 `rank_and_report` 不暴露）。`clone_repository` 是唯一联网工具，仅拉取白名单 HTTPS 仓库到本地，需用户显式确认；审查本身始终离线。描述中包含功能边界、参数示例、返回结构与限制，输入在 schema 层用 enum / pattern 约束，输出遵循严格 schema。
 
 典型调用流程：
 

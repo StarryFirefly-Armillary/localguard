@@ -242,7 +242,10 @@
     if (!$('target').reportValidity()) return null;
     const target = $('target').value.trim();
     if (!target) { $('target').setCustomValidity('请输入目标仓库或目录路径。'); $('target').reportValidity(); return null; }
-    return { target, model_tier: $('model-tier').value };
+    const args = { target, model_tier: $('model-tier').value };
+    const excluded = $('exclude-paths').value.split(',').map((s) => s.trim()).filter(Boolean);
+    if (excluded.length) args.exclude_paths = excluded;
+    return args;
   }
 
   function formArguments() {
@@ -258,15 +261,49 @@
     return { ...shared, depth: document.querySelector('input[name="depth"]:checked').value, scanners, include_dependencies: $('include-dependencies').checked, incremental, base: incremental ? base : 'HEAD~1', head: incremental ? head : 'HEAD' };
   }
 
+  function confirmClone(url) {
+    return new Promise((resolve) => {
+      const dialog = $('clone-dialog');
+      $('clone-dialog-url').textContent = url;
+      dialog.hidden = false;
+      const finish = (value) => {
+        dialog.hidden = true;
+        $('clone-confirm').removeEventListener('click', accept);
+        $('clone-cancel').removeEventListener('click', decline);
+        resolve(value);
+      };
+      const accept = () => finish(true);
+      const decline = () => finish(false);
+      $('clone-confirm').addEventListener('click', accept);
+      $('clone-cancel').addEventListener('click', decline);
+      $('clone-confirm').focus();
+    });
+  }
+
   async function submitAudit(args) {
     if (!args || !state.ready || state.submitting || isActive() || state.chatBusy || state.imageBusy) return;
     state.submitting = true;
     updateControls();
     alertIn('submit-alert', '');
     try {
-      const data = await tool('audit_repository', args);
+      let target = args.target;
+      if (/^https:\/\//i.test(target)) {
+        const ok = await confirmClone(target);
+        if (!ok) { announce('已取消克隆，未创建审查任务。'); return; }
+        alertIn('submit-alert', '正在克隆远程仓库到本地，请稍候…');
+        let cloned;
+        try {
+          cloned = await tool('clone_repository', { url: target }, 180000);
+        } catch (error) {
+          throw new ApiError(`克隆失败：${readable(error)} 仓库未更改，可重试或改用本地路径。`);
+        }
+        target = cloned.path;
+        $('target').value = target;
+        alertIn('submit-alert', '');
+      }
+      const data = await tool('audit_repository', { ...args, target });
       if (!data.audit_id) throw new ApiError('服务未返回任务编号；请检查服务状态，重试可能创建新任务。');
-      adoptAudit({ ...data, target: data.target || args.target }, args);
+      adoptAudit({ ...data, target: data.target || target }, { ...args, target });
       announce('审查任务已提交，正在同步工具执行进度。');
     } catch (error) {
       alertIn('submit-alert', readable(error), () => submitAudit(args), '重新提交');

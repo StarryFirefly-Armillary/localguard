@@ -42,6 +42,8 @@
           <option value="8gb">8 GB · 4B Q4 模型</option>
         </select>
         <p id="model-help" class="field-help">模型只做编排与解释，不生成问题定位。</p>
+        <label class="field-label" for="exclude-paths">排除路径 <span class="label-note">逗号分隔，可选</span></label>
+        <input id="exclude-paths" name="exclude_paths" form="audit-form" type="text" placeholder="fixtures/, tests/, docs/" autocomplete="off" spellcheck="false" maxlength="2000">
       </div>
 
       <section id="form-panel" role="tabpanel" aria-labelledby="form-tab">
@@ -166,6 +168,17 @@
       </div>
       <footer class="workspace-footer"><span>LocalGuard / 确定性优先，人工决策</span><span>扫描结果不替代完整安全评估</span></footer>
     </main>
+  </div>
+  <div id="clone-dialog" class="dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="clone-dialog-title" hidden>
+    <div class="dialog-card">
+      <h3 id="clone-dialog-title">克隆远程仓库并开始审查？</h3>
+      <p id="clone-dialog-url" class="mono"></p>
+      <p class="dialog-note">这是本工具唯一会联网的步骤，仅克隆到你本机的审查目录。之后的审查完全离线进行。</p>
+      <div class="dialog-actions">
+        <button id="clone-cancel" class="button secondary" type="button">取消</button>
+        <button id="clone-confirm" class="button primary" type="button">克隆并审查</button>
+      </div>
+    </div>
   </div>
   <div id="announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 </body>

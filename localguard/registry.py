@@ -178,6 +178,35 @@ class ToolRegistry:
         if name=='git_diff':
             async with self.store.resource():
                 return await self.engine.diff(args['repo'],args.get('base','HEAD~1'),args.get('head','HEAD'))
+        if name=='clone_repository':
+            # Single explicit network action. host allowlist enforced twice
+            # (schema pattern + here); no credentials, ports, query or fragment.
+            from .process import run
+            parsed = urlsplit(args['url'])
+            if parsed.scheme != 'https' or parsed.hostname not in self.config.git_hosts \
+                    or parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment:
+                raise BoundaryError('Repository URL is not an allowlisted plain HTTPS Git URL')
+            binary = self.config.binaries.get('git')
+            if not binary or not Path(binary).is_file():
+                raise ValueError('Git is unavailable; configure a local git binary')
+            async with self.store.resource():
+                clone_id = hashlib.sha256(args['url'].encode()).hexdigest()[:16]
+                destination = (self.config.data_dir / 'repositories' / clone_id).resolve()
+                if not destination.is_relative_to(self.config.data_dir):
+                    raise BoundaryError('Clone destination escapes the local state directory')
+                if not (destination / '.git').exists():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    code, _, _ = await run(
+                        [binary, '--no-pager', '-c', 'protocol.file.allow=never',
+                         '-c', 'protocol.ext.allow=never', '-c', 'protocol.submodule.allow=never',
+                         '-c', 'core.symlinks=false', '-c', f'core.hooksPath={self.config.data_dir / "no-hooks"}',
+                         'clone', '--depth', '2', '--no-recurse-submodules', '--', args['url'], str(destination)],
+                        self.config.data_dir, self.config.scanner_timeout)
+                    if code or not (destination / '.git').exists():
+                        raise ValueError('Unable to clone the requested repository')
+                if destination not in self.policy.roots:
+                    self.policy.roots.append(destination)
+                return {'path': str(destination), 'url': args['url'], 'cloned': True}
         if name=='audit_repository':
             return self.engine.submit(args,session)
         if name=='get_audit_status':

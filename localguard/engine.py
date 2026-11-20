@@ -68,7 +68,7 @@ class AuditEngine:
         return destination.resolve()
 
     @contextmanager
-    def snapshot(self, root, revision=None):
+    def snapshot(self, root, revision=None, exclude_paths=None):
         # Cleanup of the throwaway scan snapshot must never abort an audit. On
         # Windows an OCaml scanner may leave read-only temp files, and a
         # host-level rmtree shim can refuse bulk deletes. Neither affects the
@@ -84,7 +84,8 @@ class AuditEngine:
             hashes = {}
             skipped = []
             total = 0
-            for path in self.registry.policy.files(root,self.config.max_files,respect_gitignore=False):
+            for path in self.registry.policy.files(root,self.config.max_files,respect_gitignore=False,
+                                                    exclude=exclude_paths):
                 if path.is_relative_to(self.config.data_dir) and not root.is_relative_to(self.config.data_dir / 'repositories'):
                     continue
                 if path.stat().st_size > self.config.max_file_bytes:
@@ -196,7 +197,7 @@ class AuditEngine:
             contexts = {}
             coverage = {}
             async with self.store.resource():
-                with self.snapshot(root,revision) as (snapshot,hashes,skipped):
+                with self.snapshot(root,revision,args.get('exclude_paths')) as (snapshot,hashes,skipped):
                     result['warnings'] += skipped
                     result['coverage'] = {'files':len(hashes),'excluded_files':len(skipped),'scanners':coverage,'depth':depth}
                     for index,scanner in enumerate(selected):
