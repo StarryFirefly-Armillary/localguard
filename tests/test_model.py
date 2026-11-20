@@ -438,6 +438,9 @@ def test_launch_uses_known_flags_not_shell(setup, tmp_path):
     args = model._launch_args('http://127.0.0.1:4321/v1', '8gb', False)
     assert args[args.index('--ctx-size') + 1] == '4096'
     assert args[args.index('--n-gpu-layers') + 1] == '99'
+    # Single inference slot: the UI submits one request at a time, and four
+    # slots would inflate KV cache / shared GPU memory on 8 GB cards.
+    assert args[args.index('--parallel') + 1] == '1'
     assert args[args.index('--host') + 1] == '127.0.0.1'
     assert args[args.index('--port') + 1] == '4321'
 

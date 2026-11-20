@@ -190,6 +190,7 @@ class LocalModel:
             raise ModelUnavailable('Owned llama-server startup requires http://127.0.0.1:<port>/v1.')
         args = [str(binary), '--model', str(model), '--ctx-size', '4096',
                 '--n-gpu-layers', '99', '--host', '127.0.0.1', '--port', str(url.port),
+                '--parallel', '1',
                 '--alias', model.stem if tier == '4gb' else self.config.model_name]
         if vision:
             if not self.config.mmproj_path:
