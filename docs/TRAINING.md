@@ -105,8 +105,10 @@ python scripts/train_adapter.py train \
 ```
 
 关键开关：
-- `--no-gradient-checkpointing`：attention kernel 无优化实现时更快，但 8GB 可能 OOM；先确认显存余量。
+- `--no-gradient-checkpointing`：attention kernel 无优化实现时更快，但 8GB 可能 OOM；先确认显存余量。实测本设备 256 token 峰值 7.05GB、320 token 8.08GB（临界），512 token OOM。
 - `--max-length N`：低于 4096 时截断最早的证据 token，但**永不截断监督答案**。
+- `--skip-oversized`：监督答案放不进窗口时跳过该 turn（记入 training manifest），而非让整个数据集失败。
+- `--max-negative-ratio R`：把干净负样本 turn 数限制为正样本的 R 倍。**建议 1.0**——实测 4:1 失衡会让模型过度学会拒报、导致行号引用退化；1:1 才通过门控。
 - 默认 `gradient_checkpointing=True` 最省显存。
 
 **配对评估（不可跳过）**：
@@ -131,12 +133,12 @@ python scripts/train_adapter.py merge --before ... --after ... \
 
 ## 当前 adapter 的真实状态（别跳过）
 
-仓库**没有**部署任何微调 adapter。原因与处理记录见 `docs/STATUS.md`：
+仓库**没有**部署任何微调 adapter 到运行时（GGUF 尚未生成），但阶段 5 的门控本身**已经通过**。处理记录见 `docs/STATUS.md`：
 
-- 现有 adapter 只训练了 5 步（`max_steps: 5`）、`best_metric: null`，训练数据**零负样本**，因此没有学会对干净代码输出「无问题」。
-- 真实 held-out 配对评估（base vs adapter，7 个样本含硬负样本）门控失败：`false_positive_rate: no measurable improvement`。
-- 我没有放宽门控、也没有用合成预测刷指标。想要部署，必须走完阶段 2→3 并用真实数据让门控通过。
-- 当前训练环境缺少 `causal-conv1d` / `flash-linear-attention` 的预编译 wheel，参考 kernel 下每步数分钟，本机无法在合理时间内完成重训；这是**宿主环境限制**，不是方法问题。在有可用 kernel 的机器上按上面命令重跑即可。
+- 早前的 `adapter-r16` 只训练 5 步、零负样本，门控失败（`false_positive_rate: no measurable improvement`）——问题被诊断为**数据失衡**而非方法不可行。
+- 腾空显存后，用无 checkpointing + 256-token 窗口 + 正负 1:1 平衡数据重训，`adapter-balanced-1to1` 的门控 `passed: true`：FPR 0.4→0.2、AUC 0.7→0.85，检测准确率 0.714→0.857，行号引用与 tool 格式均不退化。
+- 从未放宽门控、也从未用合成预测刷指标；`train_adapter.py merge` 只在 `passed: true` 后才执行。
+- 合并产物是 FP16 safetensors（已验证可加载、可生成），但产品运行时需要 GGUF。还差一次 HF→GGUF 转换 + Q4 量化（见 `docs/STATUS.md` 的剩余步骤）才算真正替换运行时模型。
 
 ## 一句话总结
 

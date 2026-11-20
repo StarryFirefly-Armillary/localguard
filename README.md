@@ -123,14 +123,14 @@ view_file(path=<abs>, start_line, end_line)   # 深链/证据核对
 
 ## 渐进式训练指南
 
-如果你想从"纯 rules"逐步升级到"带本地模型解释"、再到"自己的 QLoRA adapter"，见 **[docs/TRAINING.md](docs/TRAINING.md)**：分阶段给出无需训练 → 现成 GGUF → 数据回流 → QLoRA 门控的完整路径，并说明当前 adapter 未通过门控的真实原因与下一步。
+如果你想从"纯 rules"逐步升级到"带本地模型解释"、再到"自己的 QLoRA adapter"，见 **[docs/TRAINING.md](docs/TRAINING.md)**：分阶段给出无需训练 → 现成 GGUF → 数据回流 → QLoRA 门控的完整路径。当前已有一个正负平衡、通过门控并合并的 adapter（FP16 产物，尚未量化为运行时 GGUF），详情见 `docs/STATUS.md`。
 
 ## 验证状态
 
 - 测试：`345 passed, 86 subtests`（`pytest -q`）。
 - 真实 MCP 客户端联调：Qoder Desktop 与另一 MCP 客户端均完成 `tools/list` 发现、`audit_repository` → `get_audit_status` 轮询、拿到与 UI 一致的结构化 issue（见发布包内的验证记录）。
 - 离线安装与审查：在离线环境用打包 wheel + 本地 wheels 安装后完成审查（见 `dist/offline/`）。
-- 已知边界：阶段 5 的 QLoRA adapter 仅完成数据/门控/评估脚手架，**配对评估门控未通过，adapter 未合并、未部署**；生产报告由确定性扫描器 + 校验层产出，模型解释始终是可选增强。详见仓库内 `docs/STATUS.md` 与 `docs/evidence/`。
+- 阶段 5 进展：一个正负平衡的 QLoRA adapter 已训练并通过配对评估门控（FPR 0.4→0.2、AUC 0.7→0.85，各项无退化），已合并为 FP16 模型。**尚未量化为运行时 GGUF**，所以生产路径仍是确定性扫描器 + 校验层，模型解释是可选增强。详见 `docs/STATUS.md`。
 
 ## 开发与打包
 
