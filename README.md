@@ -130,7 +130,7 @@ view_file(path=<abs>, start_line, end_line)   # 深链/证据核对
 - 测试：`345 passed, 86 subtests`（`pytest -q`）。
 - 真实 MCP 客户端联调：Qoder Desktop 与另一 MCP 客户端均完成 `tools/list` 发现、`audit_repository` → `get_audit_status` 轮询、拿到与 UI 一致的结构化 issue（见发布包内的验证记录）。
 - 离线安装与审查：在离线环境用打包 wheel + 本地 wheels 安装后完成审查（见 `dist/offline/`）。
-- 阶段 5 进展：一个正负平衡的 QLoRA adapter 已训练并通过配对评估门控（FPR 0.4→0.2、AUC 0.7→0.85，各项无退化），已合并为 FP16 模型。**尚未量化为运行时 GGUF**，所以生产路径仍是确定性扫描器 + 校验层，模型解释是可选增强。详见 `docs/STATUS.md`。
+- 阶段 5 进展：一个正负平衡的 QLoRA adapter 已训练并通过配对评估门控（FPR 0.4→0.2、AUC 0.7→0.85，各项无退化），已合并并量化为运行时 Q4_K_M GGUF，产品配置已指向该微调模型。确定性扫描器 + 校验层仍是可信来源，模型解释是可选增强。详见 `docs/STATUS.md`。
 
 ## 开发与打包
 
