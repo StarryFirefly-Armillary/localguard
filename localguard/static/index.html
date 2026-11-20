@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="light">
   <meta name="referrer" content="no-referrer">
   <meta name="description" content="LocalGuard 本地代码安全审查工作台，以确定性扫描和可验证证据为依据。">
   <title>LocalGuard · 本地安全审查</title>
@@ -15,20 +15,24 @@
   <header class="app-header">
     <a class="brand" href="/" aria-label="LocalGuard 首页">
       <svg class="brand-mark" viewBox="0 0 32 36" fill="none" aria-hidden="true"><path d="M16 2 29 7v10c0 8-8 14-13 17C11 31 3 25 3 17V7L16 2Z" stroke="currentColor" stroke-width="1.8"/><path d="m10 17 4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>LocalGuard<span class="brand-sub">本地代码安全审查</span></span>
+      <span>LocalGuard</span>
     </a>
     <div class="header-meta">
-      <span class="local-badge"><span class="small-square" aria-hidden="true"></span>离线优先 · 无外部资源</span>
       <span id="connection-status" class="connection-status" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connection-text">连接本地服务中</span></span>
     </div>
   </header>
+
+  <div class="notice-bar" role="note">
+    <span>本地审查 · 证据优先 · 代码不离机</span>
+    <button id="notice-close" class="notice-close" type="button" aria-label="关闭提示">×</button>
+  </div>
 
   <div id="connection-alert" class="global-alert" role="alert" hidden></div>
   <noscript><div class="global-alert">请启用 JavaScript 以连接本地审查服务。本页面不加载任何第三方资源。</div></noscript>
 
   <div class="app-layout">
     <aside class="config-sidebar" aria-labelledby="config-title">
-      <div class="section-heading"><div><p class="eyebrow">NEW REVIEW</p><h1 id="config-title">发起安全审查</h1></div><span class="step-index" aria-hidden="true">01</span></div>
+      <div class="section-heading"><h1 id="config-title">发起安全审查</h1></div>
       <div class="mode-tabs" role="tablist" aria-label="审查模式">
         <button id="form-tab" class="mode-tab" type="button" role="tab" aria-selected="true" aria-controls="form-panel" tabindex="0">表单审查</button>
         <button id="chat-tab" class="mode-tab" type="button" role="tab" aria-selected="false" aria-controls="chat-panel" tabindex="-1">对话助手</button>
@@ -36,7 +40,6 @@
       <div class="shared-fields">
         <label class="field-label" for="target">目标仓库 / 本地目录 <span class="required-mark">*</span></label>
         <input id="target" name="target" form="audit-form" type="text" placeholder="C:\Projects\your-repository" autocomplete="off" spellcheck="false" required maxlength="4096" aria-describedby="target-help">
-        <p id="target-help" class="field-help">输入绝对路径；访问范围由本地服务的目录白名单限制。</p>
         <label class="field-label" for="model-tier">模型档位 <span class="label-note">按资源选择</span></label>
         <select id="model-tier" name="model_tier" form="audit-form" aria-describedby="model-help">
           <option value="rules">规则模式 · 不加载模型</option>
@@ -78,7 +81,6 @@
           </div>
           <div id="submit-alert" class="inline-alert" role="alert" hidden></div>
           <button id="start-audit" class="button primary full-width" type="submit" disabled><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m7 4 8 6-8 6V4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span id="start-audit-label">连接服务中…</span></button>
-          <p class="submit-note">固定工具流水线 · 不经模型选择扫描器</p>
         </form>
       </section>
 
@@ -109,7 +111,6 @@
         <p>允许访问的根目录</p><ul id="allowed-roots" class="allowed-roots"><li>等待服务返回配置</li></ul>
         <p id="runtime-note" class="field-help">扫描器不可用、超时或覆盖受限，不等于扫描通过。配置由服务端管理。</p>
       </details>
-      <div class="sidebar-footnote"><span class="small-square" aria-hidden="true"></span>代码留在本机 · 证据优先于推断</div>
     </aside>
 
     <main id="main-content" class="main-content" tabindex="-1">
