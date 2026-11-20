@@ -4,7 +4,7 @@ Date: 2026-11-20 (updated same day, 20:45)
 
 ## 结论
 
-阶段 5 的配对评估门控（`localguard.training.compare_evaluations`）**已通过**，一个正负平衡的 QLoRA adapter **已训练并合并**。但合并产物是 Hugging Face FP16 格式；产品运行时用的是 GGUF + llama-server，因此还需要一次 GGUF 量化才能替换现有运行时模型。在量化完成前，交付边界仍是确定性扫描器 + locations 校验层，模型解释保持可选。
+阶段 5 的配对评估门控（`localguard.training.compare_evaluations`）**已通过**，一个正负平衡的 QLoRA adapter **已训练、合并并量化为 Q4_K_M GGUF**，产品配置已指向该微调模型。运行时用 llama.cpp CUDA 13.5 版 llama-server（RTX 5070 为 Blackwell sm_120，必须 13.5 构建），已实测 8gb 档模型解释真实执行、显存占用约 3.2GB。确定性扫描器 + locations 校验层仍是可信来源，模型解释是可选增强。
 
 ## 已实际完成的工作
 
@@ -57,7 +57,17 @@ Date: 2026-11-20 (updated same day, 20:45)
 - 产品验证：`verify_local_model.py --tier 8gb` 指向新 GGUF → `isError: false`、`native_tool_format_success: 1`、工具格式失败 0。产品 `model.py:294` 已传 `enable_thinking: false`，新模型不会陷入 thinking 模式。
 - 已切换 `<repo>/localguard.local.json` 的 `model_path` 到微调 GGUF；原配置备份在 `<training-dir>/gguf-out/localguard.local.json.backup-before-tuned`。全套测试 345 passed。
 
-注意：本项目用的是 llama.cpp **b12568** 工具链转换，而产品运行时 llama-server 是 LM Studio 捆绑的 2.79.0（更旧）。新 GGUF 已在 b12568 的 llama-server 上验证加载与推理；旧版 2.79.0 对 qwen3_5 架构的支持未在本次验证（8gb 档产品验证脚本已实际启动它并成功，见上条）。若实际使用中出现架构不兼容，回退到备份配置即可。
+## 运行时 llama-server：必须用 CUDA 13.5（Blackwell）
+
+本机 GPU 是 RTX 5070 Laptop，Blackwell 架构、compute capability 12.0（sm_120）。踩过的坑与结论：
+
+- 原先配置的 `model_binary` 指向 LM Studio 捆绑的 `llama.cpp-...-cuda12-avx2-2.79.0/llama-server.exe`，该精简后端启动即缺依赖失败，产品等待 60 秒后降级 → 报告里 `Local model explanation unavailable... timed out`，这就是"选了 8GB 但显存一点不占"的真因。
+- 用户提供的 b12568 CPU 包能启动模型，但**只用 CPU**：进程占约 6.3GB 系统内存、GPU 显存 0 MiB、首次解释 >3.5 分钟，实用性差。
+- 正确方案：llama.cpp **b12578** 的 `llama-b12578-bin-win-cuda-13.5-x64.zip` + `cudart-llama-bin-win-cuda-13.5-x64.zip`，两个 zip 解压到同一目录。cuda-12.4 构建早于 Blackwell、无 sm_120 内核也无 PTX，会静默回退 CPU（`--version` 正常但 `--list-devices` 为空），别选。
+- 验证命令：`llama-server.exe --list-devices` 必须输出 `CUDA0: NVIDIA GeForce RTX 5070 Laptop GPU`。`--version` 正常不代表 CUDA 可用。
+- 已把 `<repo>/localguard.local.json` 的 `model_binary` 指向 `<training-dir>/tools/llamacpp-cuda135/llama-server.exe`。实测 8gb 档审查：显存峰值约 3180 MiB，`coverage.model_explanation: completed`、`completed_modules` 含 `model_explanation`、解释为模型生成的中文文本，62 秒完成，结束后显存归零（`keep_model_resident: false`）。
+
+GGUF 转换用的是 b12568 工具链（含 `llama-quantize.exe`），与运行时 b12578 属同一近期系列，Q4_K_M 格式通用。
 
 观察：一次手动推理中，安全写法 `api_key = os.environ["API_KEY"]` 被微调模型报为 CWE-287。门控（7 样本）通过不代表全面零误报；确定性扫描器仍是报告的可信来源，模型解释保持可选。
 
