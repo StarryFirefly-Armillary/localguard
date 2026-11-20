@@ -104,11 +104,26 @@ view_file(path=<abs>, start_line, end_line)   # 深链/证据核对
 
 ## 模型档位
 
-- `rules`（默认）：纯确定性规则编排，无需模型，适合 4GB 以下设备与离线环境。
+- `rules`（默认）：纯确定性规则编排，**完全不需要任何模型文件**，适合 4GB 以下设备与离线环境。
 - `4gb`：tool-call 路由 + 轻量解释；配置 `model_4gb_path` 指向本地小模型。
-- `8gb`：默认 Qwen3.5-4B Q4 GGUF 用于工具调用与解释；配置 `model_binary` / `model_path` / `mmproj_path`。
+- `8gb`：Qwen3.5-4B Q4 GGUF 用于工具调用与解释；配置 `model_binary` / `model_path` / `mmproj_path`。
 
 模型只生成解释与编排，不产生被信任的行号；解释失败时保留确定性发现并给出警告。
+
+### 没有模型文件怎么办？
+
+**什么都不用做，核心功能完整可用。** 本仓库不包含也不要求任何模型文件。请直接使用默认的 `model_tier: "rules"`：
+
+- `audit` / UI / MCP 三种入口都能跑完整审查：确定性扫描 → locations 校验 → 结构化报告 → 深链跳转，行号来自 tree-sitter / 扫描器，与模型无关。
+- 实测：无任何模型文件时对内置 fixtures 执行 `rules` 审查，得到 38 条 issue，`vulnerable.c:4` 等定位准确，`status: completed`。
+- 唯一差别：报告的「自然语言解释/修复建议」是规则生成的确定性文本，而不是 LLM 润色版本；`coverage.model_explanation` 不会出现，属于预期行为，不是错误。
+- 表单模式、MCP `audit_repository` 本来就不经过 LLM 选工具；只有**对话模式**和**模型解释**才需要模型。选 `rules` 时对话模式退化为确定性路由（见 `model.py` 的 rules 分支）。
+
+想启用模型时，按 `docs/TRAINING.md` 的步骤 A 自行下载一个 GGUF 并填入配置即可；这不是使用本工具的前提。
+
+## 渐进式训练指南
+
+如果你想从"纯 rules"逐步升级到"带本地模型解释"、再到"自己的 QLoRA adapter"，见 **[docs/TRAINING.md](docs/TRAINING.md)**：分阶段给出无需训练 → 现成 GGUF → 数据回流 → QLoRA 门控的完整路径，并说明当前 adapter 未通过门控的真实原因与下一步。
 
 ## 验证状态
 
