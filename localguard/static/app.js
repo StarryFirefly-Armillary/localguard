@@ -269,7 +269,7 @@
       adoptAudit({ ...data, target: data.target || args.target }, args);
       announce('审查任务已提交，正在同步工具执行进度。');
     } catch (error) {
-      alertIn('submit-alert', `${readable(error)} 未收到有效任务编号；请确认后再重试，避免重复创建任务。`, () => submitAudit(args), '重新提交');
+      alertIn('submit-alert', readable(error), () => submitAudit(args), '重新提交');
     } finally { state.submitting = false; updateControls(); }
   }
 

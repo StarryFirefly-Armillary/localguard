@@ -66,3 +66,6 @@ Thumbs.db
 
 # ---- Downloaded toolchain binaries ----
 llama-b*-bin-win-*.zip
+
+# ---- Local checkouts cloned for auditing ----
+repos/
