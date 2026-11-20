@@ -1,0 +1,9 @@
+{
+  "audit_id": "bd91b4380612473fa4ac1110e50350ff",
+  "original_advisories": 11,
+  "retained_issues": 11,
+  "requests_advisories": 5,
+  "newest_requests_fix_preserved": true,
+  "source": "Replay of actual recorded Grype output through current view_file and publication gate",
+  "fresh_external_scanner_run": false
+}

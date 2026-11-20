@@ -1,0 +1,65 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Build / packaging ----
+build/
+dist/
+*.whl
+*.egg
+pip-wheel-metadata/
+wheelhouse/
+
+# ---- Test / tool caches ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.cover
+.tox/
+
+# ---- Generated data / runtime state ----
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# ---- Local runtime/data dir (machine-specific provenance paths) ----
+.localguard/
+
+# ---- Local config (contains absolute host paths) ----
+localguard.local.json
+*.local.json
+
+# ---- Local model / training artifacts (off-host, huge) ----
+*.gguf
+*.safetensors
+*.onnx
+
+# ---- Scratch / OS ----
+.semgrep-test-*/
+localguard-semgrep-*
+tmp/
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# ---- Editors ----
+.vscode/
+.idea/
+*.swp
+
+# ---- WorkBuddy session-local data ----
+.workbuddy/

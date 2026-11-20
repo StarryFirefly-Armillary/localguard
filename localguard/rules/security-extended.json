@@ -1,0 +1,3454 @@
+{
+ "rules": [
+  {
+   "id": "lg.ext.django-idor-direct-object-access",
+   "message": "Potential IDOR vulnerability: Object retrieved using user-supplied ID without apparent authorization check. Ensure the current user has permission to access this object.\nVulnerable: Model.objects.get(pk=user_input) Safe: Model.objects.get(pk=user_input, owner=request.user)",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-639",
+    "owasp": "A01:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "LOW",
+    "likelihood": "MEDIUM",
+    "impact": "HIGH",
+    "references": [
+     "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/05-Authorization_Testing/04-Testing_for_Insecure_Direct_Object_References"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$ID = request.GET.get(...)\n...\n$MODEL.objects.get(pk=$ID)\n"
+      },
+      {
+       "pattern": "$ID = request.POST.get(...)\n...\n$MODEL.objects.get(pk=$ID)\n"
+      },
+      {
+       "pattern": "$ID = request.GET[...]\n...\n$MODEL.objects.get(pk=$ID)\n"
+      },
+      {
+       "pattern": "$ID = request.POST[...]\n...\n$MODEL.objects.get(pk=$ID)\n"
+      },
+      {
+       "pattern": "def $FUNC(request, $ID):\n  ...\n  $MODEL.objects.get(pk=$ID)\n"
+      },
+      {
+       "pattern": "def $FUNC(request, $ID):\n  ...\n  $MODEL.objects.get(id=$ID)\n"
+      }
+     ]
+    },
+    {
+     "pattern-not": "$MODEL.objects.get(..., owner=request.user, ...)"
+    },
+    {
+     "pattern-not": "$MODEL.objects.get(..., user=request.user, ...)"
+    },
+    {
+     "pattern-not": "$MODEL.objects.filter(...).get(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-idor-profile-access",
+   "message": "Potential IDOR in profile access: Accessing user profile using URL parameter without verifying the requester owns this profile.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-639",
+    "owasp": "A01:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "def $FUNC(request, $USER_ID):\n  ...\n  User.objects.get(pk=$USER_ID)\n  ...\n"
+      },
+      {
+       "pattern": "def $FUNC(request, $USER_ID):\n  ...\n  UserProfile.objects.get(user_id=$USER_ID)\n  ...\n"
+      },
+      {
+       "pattern": "def $FUNC(request, $PROFILE_ID):\n  ...\n  Profile.objects.get(pk=$PROFILE_ID)\n  ...\n"
+      }
+     ]
+    },
+    {
+     "pattern-not-inside": "def $FUNC(request, $ID):\n  ...\n  if request.user.id != $ID:\n    ...\n"
+    },
+    {
+     "pattern-not-inside": "def $FUNC(request, $ID):\n  ...\n  if $ID != request.user.id:\n    ...\n"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-idor-order-access",
+   "message": "Potential IDOR in order/payment access: Sensitive financial data accessed without verifying ownership. Always check user authorization.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-639",
+    "owasp": "A01:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "def $FUNC(request, $ORDER_ID):\n  ...\n  Order.objects.get(pk=$ORDER_ID)\n"
+      },
+      {
+       "pattern": "def $FUNC(request, $ORDER_ID):\n  ...\n  Payment.objects.get(order_id=$ORDER_ID)\n"
+      },
+      {
+       "pattern": "$ORDER_ID = request.$METHOD.get(...)\n...\nOrder.objects.get(pk=$ORDER_ID)\n"
+      }
+     ]
+    },
+    {
+     "pattern-not": "Order.objects.get(..., user=request.user, ...)"
+    },
+    {
+     "pattern-not": "Order.objects.get(..., customer=request.user, ...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-idor-get-object-or-404",
+   "message": "Potential IDOR: get_object_or_404 used with user-supplied ID without owner/user constraint. Consider adding user=request.user.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-639",
+    "owasp": "A01:2021",
+    "category": "security",
+    "confidence": "LOW"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "get_object_or_404($MODEL, pk=$ID)"
+      },
+      {
+       "pattern": "get_object_or_404($MODEL, id=$ID)"
+      }
+     ]
+    },
+    {
+     "pattern-not": "get_object_or_404($MODEL, ..., user=request.user, ...)"
+    },
+    {
+     "pattern-not": "get_object_or_404($MODEL, ..., owner=request.user, ...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.drf-idor-missing-permission",
+   "message": "Potential IDOR in DRF ViewSet: Custom retrieve/update/destroy method accesses object without explicit permission check.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-639",
+    "owasp": "A01:2021",
+    "category": "security",
+    "technology": [
+     "django-rest-framework"
+    ],
+    "confidence": "LOW"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "def retrieve(self, request, pk=None):\n  ...\n  self.queryset.get(pk=pk)\n"
+      },
+      {
+       "pattern": "def update(self, request, pk=None):\n  ...\n  $MODEL.objects.get(pk=pk)\n"
+      }
+     ]
+    },
+    {
+     "pattern-not-inside": "def $METHOD(self, request, pk=None):\n  ...\n  self.check_object_permissions(request, ...)\n"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-idor-taint",
+   "message": "IDOR risk: User-controlled parameter flows to database query for potentially sensitive data without visible authorization check.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-639",
+    "owasp": "A01:2021",
+    "category": "security",
+    "confidence": "LOW"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "$MODEL.objects.get(pk=$ID)",
+     "focus-metavariable": "$ID"
+    },
+    {
+     "pattern": "$MODEL.objects.get(id=$ID)",
+     "focus-metavariable": "$ID"
+    },
+    {
+     "pattern": "$MODEL.objects.filter(pk=$ID)",
+     "focus-metavariable": "$ID"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "request.user.id"
+    },
+    {
+     "pattern": "request.user.pk"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-mass-assignment-update",
+   "message": "Mass Assignment vulnerability: Model updated with unfiltered request data. Attackers can modify unintended fields (e.g., is_admin, balance, role).\nVulnerable: user.__dict__.update(request.POST) Safe: Explicitly assign allowed fields only",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "MEDIUM",
+    "impact": "HIGH",
+    "references": [
+     "https://cheatsheetseries.owasp.org/cheatsheets/Mass_Assignment_Cheat_Sheet.html"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$OBJ.__dict__.update(request.POST)"
+      },
+      {
+       "pattern": "$OBJ.__dict__.update(request.POST.dict())"
+      },
+      {
+       "pattern": "$OBJ.__dict__.update(dict(request.POST))"
+      },
+      {
+       "pattern": "$OBJ.__dict__.update(request.data)"
+      },
+      {
+       "pattern": "for $KEY, $VALUE in request.POST.items():\n  ...\n  setattr($OBJ, $KEY, $VALUE)\n"
+      },
+      {
+       "pattern": "for $KEY, $VALUE in request.data.items():\n  ...\n  setattr($OBJ, $KEY, $VALUE)\n"
+      },
+      {
+       "pattern": "vars($OBJ).update(request.POST)"
+      },
+      {
+       "pattern": "vars($OBJ).update(request.data)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-mass-assignment-create",
+   "message": "Mass Assignment in object creation: Model created with unfiltered request data dictionary. Use explicit field assignment or a form.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$MODEL.objects.create(**request.POST)"
+      },
+      {
+       "pattern": "$MODEL.objects.create(**request.POST.dict())"
+      },
+      {
+       "pattern": "$MODEL.objects.create(**dict(request.POST))"
+      },
+      {
+       "pattern": "$MODEL.objects.create(**request.data)"
+      },
+      {
+       "pattern": "$MODEL(**request.POST)"
+      },
+      {
+       "pattern": "$MODEL(**request.data)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-mass-assignment-queryset-update",
+   "message": "Mass Assignment in QuerySet update: Bulk update with unfiltered request data. Specify allowed fields explicitly.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$MODEL.objects.filter(...).update(**request.POST)"
+      },
+      {
+       "pattern": "$MODEL.objects.filter(...).update(**request.POST.dict())"
+      },
+      {
+       "pattern": "$MODEL.objects.filter(...).update(**request.data)"
+      },
+      {
+       "pattern": "$QUERYSET.update(**request.POST)"
+      },
+      {
+       "pattern": "$QUERYSET.update(**request.data)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-mass-assignment-setattr",
+   "message": "Mass Assignment via setattr: User-controlled attribute name passed to setattr. Attackers can modify protected attributes.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$ATTR = request.$METHOD.get(...)\n...\nsetattr($OBJ, $ATTR, $VALUE)\n"
+      },
+      {
+       "pattern": "$ATTR = request.$METHOD[...]\n...\nsetattr($OBJ, $ATTR, $VALUE)\n"
+      },
+      {
+       "pattern": "setattr($OBJ, request.POST.get(...), $VALUE)"
+      },
+      {
+       "pattern": "setattr($OBJ, request.GET.get(...), $VALUE)"
+      },
+      {
+       "pattern": "setattr($OBJ, request.data.get(...), $VALUE)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.drf-mass-assignment-serializer",
+   "message": "Potential Mass Assignment in DRF Serializer: ModelSerializer with fields = '__all__' may expose sensitive fields. Use explicit field lists.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "technology": [
+     "django-rest-framework"
+    ],
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "class $SERIALIZER(ModelSerializer):\n  class Meta:\n    ...\n    fields = '__all__'\n"
+      },
+      {
+       "pattern": "class $SERIALIZER(serializers.ModelSerializer):\n  class Meta:\n    ...\n    fields = '__all__'\n"
+      }
+     ]
+    },
+    {
+     "pattern-not-inside": "class $SERIALIZER(...):\n  class Meta:\n    ...\n    read_only_fields = [...]\n"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-mass-assignment-modelform",
+   "message": "Potential Mass Assignment in ModelForm: Using fields = '__all__' may allow modification of unintended fields. Specify fields explicitly.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "class $FORM(ModelForm):\n  class Meta:\n    ...\n    fields = '__all__'\n"
+      },
+      {
+       "pattern": "class $FORM(forms.ModelForm):\n  class Meta:\n    ...\n    fields = '__all__'\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-mass-assignment-dict-unpacking",
+   "message": "Mass Assignment via dictionary unpacking: Request data unpacked directly into model/function. Filter or whitelist allowed keys.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$DATA = request.POST.dict()\n...\n$MODEL(**$DATA)\n"
+      },
+      {
+       "pattern": "$DATA = dict(request.POST)\n...\n$MODEL.objects.create(**$DATA)\n"
+      },
+      {
+       "pattern": "$DATA = request.data\n...\n$MODEL(**$DATA)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-mass-assignment-exec",
+   "message": "Critical: User input used in dynamic attribute assignment via exec/eval. This can lead to arbitrary code execution, not just mass assignment.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-915",
+    "owasp": "A04:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "exec(f\"$OBJ.{$ATTR} = ...\")"
+      },
+      {
+       "pattern": "$ATTR = request.$METHOD.get(...)\n...\nexec(... + $ATTR + ...)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.path-traversal-open",
+   "message": "Path Traversal vulnerability: User input used in file path without validation. Attackers can use ../ sequences to access files outside the intended directory.\nVulnerable: open(base_dir + user_input) Safe: Validate path is within allowed directory, use os.path.basename()",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-22",
+    "owasp": "A01:2021",
+    "category": "security",
+    "technology": [
+     "python"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "HIGH",
+    "references": [
+     "https://owasp.org/www-community/attacks/Path_Traversal",
+     "https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "open($BASE + $USER_INPUT, ...)"
+      },
+      {
+       "pattern": "open($BASE + $USER_INPUT)"
+      },
+      {
+       "pattern": "open(f\"...{$USER_INPUT}...\", ...)"
+      },
+      {
+       "pattern": "open(f\"...{$USER_INPUT}...\")"
+      },
+      {
+       "pattern": "open(os.path.join($BASE, $USER_INPUT), ...)"
+      },
+      {
+       "pattern": "open(os.path.join($BASE, $USER_INPUT))"
+      },
+      {
+       "pattern": "$FILENAME = request.$METHOD.get(...)\n...\nopen($PATH + $FILENAME, ...)\n"
+      },
+      {
+       "pattern": "$FILENAME = request.$METHOD.get(...)\n...\nopen(os.path.join($BASE, $FILENAME), ...)\n"
+      },
+      {
+       "pattern": "$FILENAME = request.$METHOD.get(...)\n...\nopen(f\"...{$FILENAME}...\", ...)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.path-traversal-pathlib",
+   "message": "Path Traversal: User input used with pathlib without validation. The / operator doesn't prevent ../ traversal.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-22",
+    "owasp": "A01:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "Path($BASE) / $USER_INPUT"
+      },
+      {
+       "pattern": "$FILENAME = request.$METHOD.get(...)\n...\nPath($BASE) / $FILENAME\n"
+      },
+      {
+       "pattern": "$FILENAME = request.$METHOD.get(...)\n...\n$PATH.joinpath($FILENAME)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.path-traversal-file-operations",
+   "message": "Path Traversal in file operations: User input controls file path in potentially dangerous operations (delete, copy, move).",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-22",
+    "owasp": "A01:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "os.remove($PATH + $USER_INPUT)"
+      },
+      {
+       "pattern": "os.remove(os.path.join($BASE, $USER_INPUT))"
+      },
+      {
+       "pattern": "os.unlink($PATH + $USER_INPUT)"
+      },
+      {
+       "pattern": "os.rmdir($PATH + $USER_INPUT)"
+      },
+      {
+       "pattern": "shutil.copy($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "shutil.copy(..., $USER_INPUT)"
+      },
+      {
+       "pattern": "shutil.move($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "shutil.move(..., $USER_INPUT)"
+      },
+      {
+       "pattern": "shutil.rmtree($PATH + $USER_INPUT)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-path-traversal-fileresponse",
+   "message": "Path Traversal in Django FileResponse: User input controls file path. Validate the path resolves to an allowed directory.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-22",
+    "owasp": "A01:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "HIGH"
+   },
+   "pattern-either": [
+    {
+     "pattern": "FileResponse(open($BASE + $USER_INPUT, ...))"
+    },
+    {
+     "pattern": "FileResponse(open(os.path.join($BASE, $USER_INPUT), ...))"
+    },
+    {
+     "pattern": "FileResponse(open(f\"...\", ...))"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.flask-path-traversal",
+   "message": "Path Traversal in Flask file serving: User input in file path. Use send_from_directory with a fixed directory and validated filename.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-22",
+    "owasp": "A01:2021",
+    "category": "security",
+    "technology": [
+     "flask"
+    ],
+    "confidence": "HIGH"
+   },
+   "pattern-either": [
+    {
+     "pattern": "send_file($BASE + $USER_INPUT)"
+    },
+    {
+     "pattern": "send_file(os.path.join($BASE, $USER_INPUT))"
+    },
+    {
+     "pattern": "send_file(f\"...\")"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-request-to-path-traversal",
+   "message": "Path Traversal: HTTP request data flows to file path operation. Sanitize input using os.path.basename() or validate against allowed paths.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-22",
+    "owasp": "A01:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    },
+    {
+     "pattern": "request.args.get(...)"
+    },
+    {
+     "pattern": "request.form.get(...)"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "open($PATH, ...)",
+     "focus-metavariable": "$PATH"
+    },
+    {
+     "pattern": "os.path.join($BASE, $PATH)",
+     "focus-metavariable": "$PATH"
+    },
+    {
+     "pattern": "Path($BASE) / $PATH",
+     "focus-metavariable": "$PATH"
+    },
+    {
+     "pattern": "shutil.copy($PATH, ...)",
+     "focus-metavariable": "$PATH"
+    },
+    {
+     "pattern": "os.remove($PATH)",
+     "focus-metavariable": "$PATH"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "os.path.basename(...)"
+    },
+    {
+     "pattern": "secure_filename(...)"
+    },
+    {
+     "pattern": "get_valid_filename(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-django-secret-key",
+   "message": "Hardcoded Django SECRET_KEY detected. This key is used for cryptographic signing and should be kept secret. Use environment variables instead.\nVulnerable: SECRET_KEY = 'my-secret-key-here' Safe: SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "HIGH",
+    "references": [
+     "https://docs.djangoproject.com/en/4.2/ref/settings/#secret-key"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern": "SECRET_KEY = \"...\""
+    },
+    {
+     "pattern-not": "SECRET_KEY = os.environ.get(...)"
+    },
+    {
+     "pattern-not": "SECRET_KEY = os.getenv(...)"
+    },
+    {
+     "pattern-not": "SECRET_KEY = config(...)"
+    },
+    {
+     "pattern-not": "SECRET_KEY = env(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-aws-access-key",
+   "message": "Hardcoded AWS Access Key ID detected. AWS credentials should be managed via IAM roles, environment variables, or AWS Secrets Manager.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "AWS_ACCESS_KEY_ID = \"AKIA...\""
+      },
+      {
+       "pattern": "aws_access_key_id = \"AKIA...\""
+      },
+      {
+       "pattern": "access_key = \"AKIA...\""
+      },
+      {
+       "pattern-regex": "AKIA[0-9A-Z]{16}"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-aws-secret-key",
+   "message": "Hardcoded AWS Secret Access Key detected. Use IAM roles or environment variables for AWS credentials.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "AWS_SECRET_ACCESS_KEY = \"...\""
+      },
+      {
+       "pattern": "aws_secret_access_key = \"...\""
+      },
+      {
+       "pattern": "secret_key = \"...\""
+      }
+     ]
+    },
+    {
+     "pattern-not": "$VAR = os.environ.get(...)"
+    },
+    {
+     "pattern-not": "$VAR = os.getenv(...)"
+    },
+    {
+     "metavariable-regex": {
+      "metavariable": "$VAR",
+      "regex": ".*(secret|SECRET).*"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-stripe-secret-key",
+   "message": "Hardcoded Stripe secret key detected. Live Stripe keys should never be committed to source code. Use environment variables.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-regex": "sk_live_[0-9a-zA-Z]{24,}"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-stripe-test-key",
+   "message": "Hardcoded Stripe test key detected. While test keys are less sensitive, they should still be stored securely.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-regex": "sk_test_[0-9a-zA-Z]{24,}"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-database-password",
+   "message": "Hardcoded database password detected. Use environment variables or a secrets manager for database credentials.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "DATABASES = {\n  ...,\n  \"PASSWORD\": \"...\",\n  ...\n}\n"
+      },
+      {
+       "pattern": "'PASSWORD': '...'\n"
+      },
+      {
+       "pattern": "PASSWORD = \"...\""
+      }
+     ]
+    },
+    {
+     "pattern-not": "PASSWORD = os.environ.get(...)"
+    },
+    {
+     "pattern-not": "PASSWORD = os.getenv(...)"
+    },
+    {
+     "pattern-not": "PASSWORD = \"\""
+    },
+    {
+     "pattern-not": "PASSWORD = config(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-api-key",
+   "message": "Potential hardcoded API key detected. API keys should be stored in environment variables or a secrets manager.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "API_KEY = \"...\""
+      },
+      {
+       "pattern": "api_key = \"...\""
+      },
+      {
+       "pattern": "APIKEY = \"...\""
+      },
+      {
+       "pattern": "apikey = \"...\""
+      }
+     ]
+    },
+    {
+     "pattern-not": "$VAR = os.environ.get(...)"
+    },
+    {
+     "pattern-not": "$VAR = os.getenv(...)"
+    },
+    {
+     "pattern-not": "$VAR = \"\""
+    },
+    {
+     "pattern-not": "$VAR = None"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-jwt-secret",
+   "message": "Hardcoded JWT secret detected. JWT signing keys should be stored securely and rotated periodically.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "JWT_SECRET = \"...\""
+      },
+      {
+       "pattern": "JWT_SECRET_KEY = \"...\""
+      },
+      {
+       "pattern": "jwt_secret = \"...\""
+      }
+     ]
+    },
+    {
+     "pattern-not": "$VAR = os.environ.get(...)"
+    },
+    {
+     "pattern-not": "$VAR = os.getenv(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-private-key",
+   "message": "Hardcoded private key detected. Private keys should never be committed to source code. Use secure key management.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-regex": "-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-github-token",
+   "message": "Hardcoded GitHub token detected. GitHub tokens provide access to repositories and should be kept secret.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-regex": "gh[pousr]_[A-Za-z0-9_]{36,}"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-slack-token",
+   "message": "Hardcoded Slack token detected. Slack tokens can be used to access workspace data and should be stored securely.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-regex": "xox[baprs]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24}"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.hardcoded-sendgrid-key",
+   "message": "Hardcoded SendGrid API key detected. Email service credentials should be stored in environment variables.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-798",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-regex": "SG\\.[a-zA-Z0-9_-]{22}\\.[a-zA-Z0-9_-]{43}"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-md5",
+   "message": "Weak cryptography: MD5 hash is cryptographically broken and should not be used for security purposes (passwords, signatures, integrity).\nMD5 is vulnerable to collision attacks and rainbow tables. Use SHA-256/SHA-3 for integrity, bcrypt/argon2 for passwords.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-328",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH",
+    "likelihood": "MEDIUM",
+    "impact": "MEDIUM",
+    "references": [
+     "https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html",
+     "https://en.wikipedia.org/wiki/MD5#Security"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "hashlib.md5(...)"
+      },
+      {
+       "pattern": "MD5.new(...)"
+      },
+      {
+       "pattern": "md5(...)"
+      },
+      {
+       "pattern": "Crypto.Hash.MD5.new(...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-sha1",
+   "message": "Weak cryptography: SHA-1 is deprecated for security purposes. Collision attacks against SHA-1 are practical.\nUse SHA-256 or SHA-3 instead for security applications.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-328",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "hashlib.sha1(...)"
+      },
+      {
+       "pattern": "SHA1.new(...)"
+      },
+      {
+       "pattern": "sha1(...)"
+      },
+      {
+       "pattern": "Crypto.Hash.SHA1.new(...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-des",
+   "message": "Weak cryptography: DES and 3DES are deprecated. DES has a 56-bit key (trivially brute-forced) and 3DES is slow and limited.\nUse AES-256-GCM for symmetric encryption.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-327",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "DES.new(...)"
+      },
+      {
+       "pattern": "DES3.new(...)"
+      },
+      {
+       "pattern": "Crypto.Cipher.DES.new(...)"
+      },
+      {
+       "pattern": "Crypto.Cipher.DES3.new(...)"
+      },
+      {
+       "pattern": "Blowfish.new(...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-rc4",
+   "message": "Weak cryptography: RC4 stream cipher has known biases and vulnerabilities. It should not be used for encryption.\nUse AES-GCM or ChaCha20-Poly1305 instead.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-327",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "ARC4.new(...)"
+      },
+      {
+       "pattern": "RC4.new(...)"
+      },
+      {
+       "pattern": "Crypto.Cipher.ARC4.new(...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-ecb-mode",
+   "message": "Weak cryptography: ECB mode does not provide semantic security. Identical plaintext blocks produce identical ciphertext blocks, leaking patterns.\nUse CBC, CTR, or preferably GCM mode for authenticated encryption.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-327",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "AES.new(..., AES.MODE_ECB, ...)"
+      },
+      {
+       "pattern": "AES.new(..., mode=AES.MODE_ECB, ...)"
+      },
+      {
+       "pattern": "Cipher.new(..., Cipher.MODE_ECB, ...)"
+      },
+      {
+       "pattern": "Crypto.Cipher.AES.new(..., Crypto.Cipher.AES.MODE_ECB)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-random",
+   "message": "Insecure random number generator used for security-sensitive operation. The 'random' module is not cryptographically secure.\nUse 'secrets' module or 'os.urandom()' for security purposes.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-330",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "pattern-either": [
+    {
+     "pattern": "random.randint(...)"
+    },
+    {
+     "pattern": "random.random()"
+    },
+    {
+     "pattern": "random.choice(...)"
+    },
+    {
+     "pattern": "random.choices(...)"
+    },
+    {
+     "pattern": "random.sample(...)"
+    },
+    {
+     "pattern": "random.shuffle(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-static-iv",
+   "message": "Static IV/nonce in encryption. IVs and nonces must be unique for each encryption operation. Reusing IVs breaks the security of many modes.\nGenerate a random IV using os.urandom(16) for each encryption.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-329",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "AES.new($KEY, ..., iv=b\"...\")"
+      },
+      {
+       "pattern": "AES.new($KEY, ..., nonce=b\"...\")"
+      },
+      {
+       "pattern": "$IV = b\"...\"\n...\nAES.new($KEY, ..., iv=$IV)\n"
+      },
+      {
+       "pattern": "$NONCE = b\"...\"\n...\nAES.new($KEY, ..., nonce=$NONCE)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-hardcoded-key",
+   "message": "Hardcoded encryption key detected. Encryption keys should be stored securely and loaded from environment or key management systems.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-321",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "AES.new(b\"...\", ...)"
+      },
+      {
+       "pattern": "AES.new(\"...\", ...)"
+      },
+      {
+       "pattern": "$KEY = b\"...\"\n...\nAES.new($KEY, ...)\n"
+      },
+      {
+       "pattern": "Fernet(b\"...\")"
+      },
+      {
+       "pattern": "$KEY = \"...\"\n...\nFernet($KEY)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-password-hash",
+   "message": "Insecure password hashing: Using plain hash functions (MD5, SHA) for passwords. These are fast and vulnerable to rainbow tables/brute force.\nUse bcrypt, scrypt, argon2, or PBKDF2 with high iteration count.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-916",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "hashlib.md5($PASSWORD).hexdigest()"
+      },
+      {
+       "pattern": "hashlib.sha1($PASSWORD).hexdigest()"
+      },
+      {
+       "pattern": "hashlib.sha256($PASSWORD).hexdigest()"
+      },
+      {
+       "pattern": "$HASH = hashlib.$ALGO($PASSWORD)\n...\n$HASH.hexdigest()\n"
+      }
+     ]
+    },
+    {
+     "metavariable-regex": {
+      "metavariable": "$PASSWORD",
+      "regex": "(?i).*(password|passwd|pwd|secret).*"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-low-pbkdf2-iterations",
+   "message": "PBKDF2 with low iteration count. OWASP recommends at least 600,000 iterations for SHA-256 as of 2023.\nIncrease iterations to slow down brute-force attacks.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-916",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "pbkdf2_hmac(..., iterations=$COUNT, ...)"
+      },
+      {
+       "pattern": "PBKDF2(..., count=$COUNT, ...)"
+      }
+     ]
+    },
+    {
+     "metavariable-comparison": {
+      "metavariable": "$COUNT",
+      "comparison": "$COUNT < 100000"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.weak-crypto-ssl-verify-disabled",
+   "message": "SSL/TLS certificate verification disabled. This allows man-in-the-middle attacks. Always verify certificates in production.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-295",
+    "owasp": "A02:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "requests.get(..., verify=False, ...)"
+      },
+      {
+       "pattern": "requests.post(..., verify=False, ...)"
+      },
+      {
+       "pattern": "requests.put(..., verify=False, ...)"
+      },
+      {
+       "pattern": "requests.delete(..., verify=False, ...)"
+      },
+      {
+       "pattern": "requests.request(..., verify=False, ...)"
+      },
+      {
+       "pattern": "urllib3.disable_warnings(...)"
+      },
+      {
+       "pattern": "ssl._create_unverified_context()"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.pickle-loads-user-input",
+   "message": "Insecure Deserialization: pickle.loads() with user-controlled data can lead to Remote Code Execution (RCE). The pickle module can execute arbitrary code during deserialization.\nVulnerable: pickle.loads(user_data) Safe: Use JSON or other safe serialization formats",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-502",
+    "owasp": "A08:2021",
+    "category": "security",
+    "technology": [
+     "python"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "CRITICAL",
+    "references": [
+     "https://docs.python.org/3/library/pickle.html",
+     "https://blog.nelhage.com/2011/03/exploiting-pickle/"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "pickle.loads($USER_INPUT)"
+      },
+      {
+       "pattern": "pickle.load($USER_INPUT)"
+      },
+      {
+       "pattern": "_pickle.loads($USER_INPUT)"
+      },
+      {
+       "pattern": "cPickle.loads($USER_INPUT)"
+      },
+      {
+       "pattern": "$DATA = request.COOKIES.get(...)\n...\npickle.loads($DATA)\n"
+      },
+      {
+       "pattern": "$DATA = request.COOKIES.get(...)\n...\npickle.loads(base64.b64decode($DATA))\n"
+      },
+      {
+       "pattern": "$DATA = request.$METHOD.get(...)\n...\npickle.loads($DATA)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.yaml-unsafe-load",
+   "message": "Insecure Deserialization: yaml.load() without SafeLoader can execute arbitrary Python code. Use yaml.safe_load() instead.\nVulnerable: yaml.load(user_data) Safe: yaml.safe_load(user_data)",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-502",
+    "owasp": "A08:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "yaml.load($DATA)"
+      },
+      {
+       "pattern": "yaml.load($DATA, Loader=yaml.Loader)"
+      },
+      {
+       "pattern": "yaml.load($DATA, Loader=yaml.UnsafeLoader)"
+      },
+      {
+       "pattern": "yaml.load($DATA, Loader=yaml.FullLoader)"
+      },
+      {
+       "pattern": "yaml.unsafe_load($DATA)"
+      },
+      {
+       "pattern": "yaml.full_load($DATA)"
+      }
+     ]
+    }
+   ],
+   "fix": "yaml.safe_load($DATA)"
+  },
+  {
+   "id": "lg.ext.marshal-loads-user-input",
+   "message": "Insecure Deserialization: marshal.loads() with untrusted data is dangerous. Like pickle, marshal can execute code during deserialization.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-502",
+    "owasp": "A08:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "marshal.loads($USER_INPUT)"
+      },
+      {
+       "pattern": "marshal.load($USER_INPUT)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.shelve-user-input",
+   "message": "Insecure Deserialization: shelve uses pickle internally. Opening a shelve file with untrusted data can lead to code execution.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-502",
+    "owasp": "A08:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "shelve.open($USER_INPUT)"
+      },
+      {
+       "pattern": "shelve.open($USER_INPUT, ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.jsonpickle-decode",
+   "message": "Insecure Deserialization: jsonpickle.decode() can execute arbitrary code when deserializing untrusted data, similar to pickle.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-502",
+    "owasp": "A08:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "jsonpickle.decode($USER_INPUT)"
+      },
+      {
+       "pattern": "jsonpickle.decode($USER_INPUT, ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.dill-loads-user-input",
+   "message": "Insecure Deserialization: dill.loads() is an extension of pickle and inherits its code execution vulnerability.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-502",
+    "owasp": "A08:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "dill.loads($USER_INPUT)"
+      },
+      {
+       "pattern": "dill.load($USER_INPUT)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-request-to-deserialization",
+   "message": "Insecure Deserialization: HTTP request data flows to deserialization function. This can lead to Remote Code Execution.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-502",
+    "owasp": "A08:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.COOKIES.get(...)"
+    },
+    {
+     "pattern": "request.COOKIES[...]"
+    },
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.data.get(...)"
+    },
+    {
+     "pattern": "request.body"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "pickle.loads($DATA)",
+     "focus-metavariable": "$DATA"
+    },
+    {
+     "pattern": "pickle.load($DATA)",
+     "focus-metavariable": "$DATA"
+    },
+    {
+     "pattern": "yaml.load($DATA, ...)",
+     "focus-metavariable": "$DATA"
+    },
+    {
+     "pattern": "marshal.loads($DATA)",
+     "focus-metavariable": "$DATA"
+    },
+    {
+     "pattern": "jsonpickle.decode($DATA, ...)",
+     "focus-metavariable": "$DATA"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "json.loads(...)"
+    },
+    {
+     "pattern": "yaml.safe_load(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.command-injection-os-system",
+   "message": "Command Injection vulnerability: User input flows to os.system(). This allows arbitrary command execution. Use subprocess with shell=False and a list of arguments instead.\nVulnerable: os.system(f\"ping {user_input}\") Safe: subprocess.run([\"ping\", user_input], shell=False)",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-78",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "python"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "CRITICAL",
+    "references": [
+     "https://owasp.org/www-community/attacks/Command_Injection",
+     "https://docs.python.org/3/library/subprocess.html"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "os.system(f\"...{$USER_INPUT}...\")\n"
+      },
+      {
+       "pattern": "os.system(\"...\" + $USER_INPUT + \"...\")\n"
+      },
+      {
+       "pattern": "os.system(\"...\" + $USER_INPUT)\n"
+      },
+      {
+       "pattern": "os.system($USER_INPUT + \"...\")\n"
+      },
+      {
+       "pattern": "$CMD = f\"...{$USER_INPUT}...\"\n...\nos.system($CMD)\n"
+      },
+      {
+       "pattern": "$CMD = \"...\" + $USER_INPUT + \"...\"\n...\nos.system($CMD)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.command-injection-os-popen",
+   "message": "Command Injection via os.popen(). User input in command string allows arbitrary command execution. Use subprocess with shell=False instead.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-78",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "os.popen(f\"...{$USER_INPUT}...\")"
+      },
+      {
+       "pattern": "os.popen(\"...\" + $USER_INPUT + \"...\")"
+      },
+      {
+       "pattern": "os.popen(\"...\" + $USER_INPUT)"
+      },
+      {
+       "pattern": "$CMD = f\"...{$USER_INPUT}...\"\n...\nos.popen($CMD)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.command-injection-subprocess-shell",
+   "message": "Command Injection: User input passed to subprocess with shell=True. When shell=True, the command is executed through the shell, allowing shell metacharacters to be interpreted.\nVulnerable: subprocess.call(f\"cmd {user_input}\", shell=True) Safe: subprocess.call([\"cmd\", user_input], shell=False)",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-78",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "subprocess.call(f\"...{$USER_INPUT}...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.call(\"...\" + $USER_INPUT + \"...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.call($CMD, shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.run(f\"...{$USER_INPUT}...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.run(\"...\" + $USER_INPUT + \"...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.run($CMD, shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.Popen(f\"...{$USER_INPUT}...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.Popen(\"...\" + $USER_INPUT + \"...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.Popen($CMD, shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.check_output(f\"...{$USER_INPUT}...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.check_output(\"...\" + $USER_INPUT + \"...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.check_output($CMD, shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.check_call(f\"...{$USER_INPUT}...\", shell=True, ...)"
+      },
+      {
+       "pattern": "subprocess.check_call(\"...\" + $USER_INPUT + \"...\", shell=True, ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-request-to-command-injection",
+   "message": "Command Injection: HTTP request data flows to command execution. Sanitize input or use subprocess with shell=False and argument lists.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-78",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    },
+    {
+     "pattern": "request.data.get(...)"
+    },
+    {
+     "pattern": "request.data[...]"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "os.system($CMD)",
+     "focus-metavariable": "$CMD"
+    },
+    {
+     "pattern": "os.popen($CMD, ...)",
+     "focus-metavariable": "$CMD"
+    },
+    {
+     "pattern": "subprocess.call($CMD, shell=True, ...)",
+     "focus-metavariable": "$CMD"
+    },
+    {
+     "pattern": "subprocess.run($CMD, shell=True, ...)",
+     "focus-metavariable": "$CMD"
+    },
+    {
+     "pattern": "subprocess.Popen($CMD, shell=True, ...)",
+     "focus-metavariable": "$CMD"
+    },
+    {
+     "pattern": "subprocess.check_output($CMD, shell=True, ...)",
+     "focus-metavariable": "$CMD"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "shlex.quote(...)"
+    },
+    {
+     "pattern": "pipes.quote(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.code-injection-eval-exec",
+   "message": "Code Injection: User input passed to eval() or exec(). This allows arbitrary Python code execution. Never use eval/exec with untrusted input.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-94",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH",
+    "impact": "CRITICAL"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "eval($USER_INPUT)"
+      },
+      {
+       "pattern": "eval(f\"...{$USER_INPUT}...\")"
+      },
+      {
+       "pattern": "exec($USER_INPUT)"
+      },
+      {
+       "pattern": "exec(f\"...{$USER_INPUT}...\")"
+      },
+      {
+       "pattern": "compile($USER_INPUT, ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-sql-injection-format-string",
+   "message": "SQL Injection vulnerability detected. User input from request is being formatted directly into a SQL query string using f-strings. Use parameterized queries instead.\nVulnerable pattern: cursor.execute(f\"SELECT * FROM table WHERE col = '{user_input}'\") Safe pattern: cursor.execute(\"SELECT * FROM table WHERE col = %s\", [user_input])",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-89",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "django",
+     "python"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "HIGH",
+    "references": [
+     "https://docs.djangoproject.com/en/4.2/topics/security/#sql-injection-protection",
+     "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$CURSOR.execute(f\"...{$USER_INPUT}...\", ...)\n"
+      },
+      {
+       "pattern": "$CURSOR.execute(f\"...{$USER_INPUT}...\")\n"
+      },
+      {
+       "pattern": "$CURSOR.executemany(f\"...{$USER_INPUT}...\", ...)\n"
+      },
+      {
+       "pattern": "$QUERY = f\"...{$USER_INPUT}...\"\n...\n$CURSOR.execute($QUERY, ...)\n"
+      },
+      {
+       "pattern": "$QUERY = f\"...{$USER_INPUT}...\"\n...\n$CURSOR.execute($QUERY)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-sql-injection-concatenation",
+   "message": "SQL Injection vulnerability: User input is concatenated into SQL query. Use parameterized queries to prevent SQL injection.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-89",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$QUERY = \"...\" + $USER_INPUT + \"...\"\n...\n$CURSOR.execute($QUERY, ...)\n"
+      },
+      {
+       "pattern": "$QUERY = \"...\" + $USER_INPUT + \"...\"\n...\n$CURSOR.execute($QUERY)\n"
+      },
+      {
+       "pattern": "$CURSOR.execute(\"...\" + $USER_INPUT + \"...\", ...)\n"
+      },
+      {
+       "pattern": "$CURSOR.execute(\"...\" + $USER_INPUT + \"...\")\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-sql-injection-percent-format",
+   "message": "SQL Injection vulnerability: User input formatted with % operator into SQL query. Use parameterized queries with proper escaping.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-89",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$QUERY = \"...\" % $USER_INPUT\n...\n$CURSOR.execute($QUERY, ...)\n"
+      },
+      {
+       "pattern": "$QUERY = \"...\" % ($USER_INPUT,)\n...\n$CURSOR.execute($QUERY)\n"
+      },
+      {
+       "pattern": "$CURSOR.execute(\"...\" % $USER_INPUT, ...)\n"
+      },
+      {
+       "pattern": "$CURSOR.execute(\"...\" % ($USER_INPUT,))\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-raw-sql-injection",
+   "message": "SQL Injection in Django raw() query. User-controlled data flows directly to raw SQL query without parameterization.\nVulnerable: Model.objects.raw(f\"SELECT * FROM table WHERE col = '{user_input}'\") Safe: Model.objects.raw(\"SELECT * FROM table WHERE col = %s\", [user_input])",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-89",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$MODEL.objects.raw(f\"...{$USER_INPUT}...\")\n"
+      },
+      {
+       "pattern": "$MODEL.objects.raw(\"...\" + $USER_INPUT + \"...\")\n"
+      },
+      {
+       "pattern": "$MODEL.objects.raw(\"...\" % $USER_INPUT)\n"
+      },
+      {
+       "pattern": "$QUERY = f\"...{$USER_INPUT}...\"\n...\n$MODEL.objects.raw($QUERY)\n"
+      },
+      {
+       "pattern": "$QUERY = \"...\" + $USER_INPUT + \"...\"\n...\n$MODEL.objects.raw($QUERY)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-extra-sql-injection",
+   "message": "SQL Injection via QuerySet.extra(). User input in extra() clauses can lead to SQL injection. Consider using Django ORM methods or parameterized queries.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-89",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$QUERYSET.extra(where=[f\"...{$USER_INPUT}...\"])\n"
+      },
+      {
+       "pattern": "$QUERYSET.extra(where=[\"...\" + $USER_INPUT + \"...\"])\n"
+      },
+      {
+       "pattern": "$QUERYSET.extra(select={...: f\"...{$USER_INPUT}...\"})\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-request-to-sql-injection",
+   "message": "SQL Injection: Data from HTTP request flows to SQL execution. Trace the data flow and ensure proper parameterization.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-89",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    },
+    {
+     "pattern": "request.data.get(...)"
+    },
+    {
+     "pattern": "request.data[...]"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "$CURSOR.execute($QUERY, ...)",
+     "focus-metavariable": "$QUERY"
+    },
+    {
+     "pattern": "$CURSOR.execute($QUERY)",
+     "focus-metavariable": "$QUERY"
+    },
+    {
+     "pattern": "$MODEL.objects.raw($QUERY, ...)",
+     "focus-metavariable": "$QUERY"
+    },
+    {
+     "pattern": "$MODEL.objects.raw($QUERY)",
+     "focus-metavariable": "$QUERY"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "int(...)"
+    },
+    {
+     "pattern": "float(...)"
+    },
+    {
+     "pattern": "$MODEL.objects.filter(...)"
+    },
+    {
+     "pattern": "$MODEL.objects.get(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-ssti-template",
+   "message": "Server-Side Template Injection (SSTI) vulnerability: User input used to construct a Django Template. Attackers can inject template code to access sensitive data or execute arbitrary code.\nVulnerable: Template(user_input).render(context) Safe: Use pre-defined template files, never construct templates from user input",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-1336",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "CRITICAL",
+    "references": [
+     "https://portswigger.net/web-security/server-side-template-injection",
+     "https://book.hacktricks.xyz/pentesting-web/ssti-server-side-template-injection"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "Template($USER_INPUT)"
+      },
+      {
+       "pattern": "Template($USER_INPUT).render(...)"
+      },
+      {
+       "pattern": "from django.template import Template\n...\nTemplate($USER_INPUT)\n"
+      },
+      {
+       "pattern": "$TEMPLATE_STR = request.$METHOD.get(...)\n...\nTemplate($TEMPLATE_STR)\n"
+      },
+      {
+       "pattern": "$TEMPLATE_STR = request.$METHOD[...]\n...\nTemplate($TEMPLATE_STR)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.jinja2-ssti",
+   "message": "SSTI vulnerability: User input passed to Jinja2 Template constructor. This allows execution of arbitrary Jinja2 expressions.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-1336",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "jinja2",
+     "flask"
+    ],
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "jinja2.Template($USER_INPUT)"
+      },
+      {
+       "pattern": "jinja2.Template($USER_INPUT).render(...)"
+      },
+      {
+       "pattern": "$TEMPLATE_STR = request.$METHOD.get(...)\n...\njinja2.Template($TEMPLATE_STR)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.flask-ssti-render-template-string",
+   "message": "SSTI vulnerability: User input passed to render_template_string(). This renders the string as a Jinja2 template, allowing code execution.\nVulnerable: render_template_string(user_input) Safe: Use render_template() with .html files",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-1336",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "flask"
+    ],
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "render_template_string($USER_INPUT)"
+      },
+      {
+       "pattern": "render_template_string($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "$TEMPLATE = request.$METHOD.get(...)\n...\nrender_template_string($TEMPLATE)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.jinja2-ssti-from-string",
+   "message": "SSTI: User input passed to Environment.from_string() creates a template from untrusted content, allowing template injection attacks.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-1336",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$ENV.from_string($USER_INPUT)"
+      },
+      {
+       "pattern": "$TEMPLATE_STR = request.$METHOD.get(...)\n...\n$ENV.from_string($TEMPLATE_STR)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.mako-ssti",
+   "message": "SSTI vulnerability: User input used in Mako Template construction. Mako templates can execute arbitrary Python code.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-1336",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "mako"
+    ],
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "mako.template.Template($USER_INPUT)"
+      },
+      {
+       "pattern": "Template($USER_INPUT, ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-request-to-ssti",
+   "message": "SSTI: HTTP request data flows to template construction. Never create templates from user-controlled strings.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-1336",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    },
+    {
+     "pattern": "request.data.get(...)"
+    },
+    {
+     "pattern": "request.form.get(...)"
+    },
+    {
+     "pattern": "request.args.get(...)"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "Template($INPUT)",
+     "focus-metavariable": "$INPUT"
+    },
+    {
+     "pattern": "jinja2.Template($INPUT)",
+     "focus-metavariable": "$INPUT"
+    },
+    {
+     "pattern": "render_template_string($INPUT, ...)",
+     "focus-metavariable": "$INPUT"
+    },
+    {
+     "pattern": "$ENV.from_string($INPUT)",
+     "focus-metavariable": "$INPUT"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-xss-mark-safe",
+   "message": "Cross-Site Scripting (XSS) vulnerability: User input passed to mark_safe() bypasses Django's auto-escaping and will be rendered as raw HTML.\nVulnerable: mark_safe(user_input) Safe: escape(user_input) or use Django template auto-escaping",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-79",
+    "owasp": "A03:2021",
+    "category": "security",
+    "technology": [
+     "django"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "MEDIUM",
+    "references": [
+     "https://docs.djangoproject.com/en/4.2/ref/utils/#django.utils.safestring.mark_safe",
+     "https://owasp.org/www-community/attacks/xss/"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "mark_safe($USER_INPUT)"
+      },
+      {
+       "pattern": "mark_safe(f\"...{$USER_INPUT}...\")"
+      },
+      {
+       "pattern": "mark_safe(\"...\" + $USER_INPUT + \"...\")"
+      },
+      {
+       "pattern": "from django.utils.safestring import mark_safe\n...\nmark_safe($USER_INPUT)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-xss-format-html-misuse",
+   "message": "Potential XSS: format_html() format string contains user input. The format string itself should be a static string, with user input only in the format arguments (which are auto-escaped).\nVulnerable: format_html(user_input) Safe: format_html(\"<b>{}</b>\", user_input)",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-79",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "format_html($USER_INPUT)"
+      },
+      {
+       "pattern": "format_html(f\"...{$USER_INPUT}...\", ...)"
+      },
+      {
+       "pattern": "format_html(\"...\" + $USER_INPUT + \"...\", ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-xss-httpresponse",
+   "message": "Potential XSS: User input rendered in HttpResponse without escaping. HttpResponse does not auto-escape content. Use escape() or render templates.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-79",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "HttpResponse(f\"...{$USER_INPUT}...\")"
+      },
+      {
+       "pattern": "HttpResponse(\"...\" + $USER_INPUT + \"...\")"
+      },
+      {
+       "pattern": "$CONTENT = f\"...{$USER_INPUT}...\"\n...\nHttpResponse($CONTENT)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-request-to-xss",
+   "message": "XSS vulnerability: HTTP request data flows to HTML output without escaping.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-79",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "mark_safe($INPUT)",
+     "focus-metavariable": "$INPUT"
+    },
+    {
+     "pattern": "format_html($INPUT, ...)",
+     "focus-metavariable": "$INPUT"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "escape(...)"
+    },
+    {
+     "pattern": "strip_tags(...)"
+    },
+    {
+     "pattern": "bleach.clean(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-stored-xss",
+   "message": "Potential Stored XSS: Data retrieved from database rendered with mark_safe(). Database content may contain malicious scripts stored by attackers. Sanitize content before marking as safe.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-79",
+    "owasp": "A03:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$DATA = $MODEL.objects.$METHOD(...)\n...\nmark_safe($DATA.$FIELD)\n"
+      },
+      {
+       "pattern": "$OBJ = $MODEL.objects.get(...)\n...\n$OBJ.$FIELD = mark_safe($OBJ.$FIELD)\n"
+      },
+      {
+       "pattern": "mark_safe($OBJ.comment)"
+      },
+      {
+       "pattern": "mark_safe($OBJ.content)"
+      },
+      {
+       "pattern": "mark_safe($OBJ.body)"
+      },
+      {
+       "pattern": "mark_safe($OBJ.description)"
+      },
+      {
+       "pattern": "mark_safe($OBJ.html)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-template-safe-filter",
+   "message": "XSS risk: The |safe filter bypasses Django's auto-escaping. Ensure the variable contains trusted, sanitized content.",
+   "severity": "WARNING",
+   "languages": [
+    "generic"
+   ],
+   "paths": {
+    "include": [
+     "**/*.html"
+    ]
+   },
+   "metadata": {
+    "cwe": "CWE-79",
+    "category": "security",
+    "confidence": "LOW"
+   },
+   "patterns": [
+    {
+     "pattern": "{{ $VAR|safe }}"
+    },
+    {
+     "pattern": "{{ $VAR |safe }}"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.django-template-autoescape-off",
+   "message": "XSS risk: autoescape is disabled in this template block. All variables in this block will be rendered without escaping.",
+   "severity": "WARNING",
+   "languages": [
+    "generic"
+   ],
+   "paths": {
+    "include": [
+     "**/*.html"
+    ]
+   },
+   "metadata": {
+    "cwe": "CWE-79",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "pattern": "{% autoescape off %}"
+  },
+  {
+   "id": "lg.ext.sensitive-data-logging-request",
+   "message": "Sensitive data may be logged. Logging HTTP request data (POST, COOKIES) can expose passwords, tokens, and other sensitive information in log files.\nAvoid logging: passwords, tokens, credit cards, SSN, API keys",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-532",
+    "owasp": "A09:2021",
+    "category": "security",
+    "confidence": "MEDIUM",
+    "likelihood": "MEDIUM",
+    "impact": "MEDIUM",
+    "references": [
+     "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/06-Session_Management_Testing/05-Testing_for_Session_Tokens_Leaked_in_Log_Files"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "logging.info(..., request.POST, ...)"
+      },
+      {
+       "pattern": "logging.info(..., dict(request.POST), ...)"
+      },
+      {
+       "pattern": "logging.info(f\"...{request.POST}...\")"
+      },
+      {
+       "pattern": "logging.debug(..., request.POST, ...)"
+      },
+      {
+       "pattern": "logging.debug(f\"...{request.POST}...\")"
+      },
+      {
+       "pattern": "logger.info(..., request.POST, ...)"
+      },
+      {
+       "pattern": "logger.info(f\"...{request.POST}...\")"
+      },
+      {
+       "pattern": "logger.debug(..., request.POST, ...)"
+      },
+      {
+       "pattern": "logging.info(..., request.COOKIES, ...)"
+      },
+      {
+       "pattern": "logging.info(f\"...{request.COOKIES}...\")"
+      },
+      {
+       "pattern": "logger.info(..., request.COOKIES, ...)"
+      },
+      {
+       "pattern": "logging.info(f\"...{request}...\")"
+      },
+      {
+       "pattern": "logger.info(f\"...{request}...\")"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.sensitive-data-logging-password",
+   "message": "Password may be logged. Never log passwords or authentication credentials. This exposes user credentials in log files.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-532",
+    "owasp": "A09:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "logging.$LEVEL(..., $PASSWORD, ...)"
+      },
+      {
+       "pattern": "logging.$LEVEL(f\"...{$PASSWORD}...\")"
+      },
+      {
+       "pattern": "logger.$LEVEL(..., $PASSWORD, ...)"
+      },
+      {
+       "pattern": "logger.$LEVEL(f\"...{$PASSWORD}...\")"
+      },
+      {
+       "pattern": "print($PASSWORD)"
+      },
+      {
+       "pattern": "print(f\"...{$PASSWORD}...\")"
+      }
+     ]
+    },
+    {
+     "metavariable-regex": {
+      "metavariable": "$PASSWORD",
+      "regex": "(?i).*(password|passwd|pwd|secret|token|credential|api_key).*"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.sensitive-data-logging-credit-card",
+   "message": "Credit card data may be logged. Logging payment card data violates PCI-DSS requirements and exposes customer financial information.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-532",
+    "owasp": "A09:2021",
+    "category": "security",
+    "subcategory": [
+     "pci-dss"
+    ],
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "logging.$LEVEL(..., $CARD, ...)"
+      },
+      {
+       "pattern": "logging.$LEVEL(f\"...{$CARD}...\")"
+      },
+      {
+       "pattern": "logger.$LEVEL(..., $CARD, ...)"
+      }
+     ]
+    },
+    {
+     "metavariable-regex": {
+      "metavariable": "$CARD",
+      "regex": "(?i).*(card_number|card_num|cvv|cvc|credit_card|cc_number).*"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.sensitive-data-logging-session",
+   "message": "Session data may be logged. Session tokens in logs can be used for session hijacking attacks.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-532",
+    "owasp": "A09:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "logging.$LEVEL(..., request.session, ...)"
+      },
+      {
+       "pattern": "logging.$LEVEL(f\"...{request.session}...\")"
+      },
+      {
+       "pattern": "logger.$LEVEL(..., request.session, ...)"
+      },
+      {
+       "pattern": "logger.$LEVEL(f\"...{request.session}...\")"
+      },
+      {
+       "pattern": "logging.$LEVEL(..., $SESSION_KEY, ...)"
+      }
+     ]
+    },
+    {
+     "metavariable-regex": {
+      "metavariable": "$SESSION_KEY",
+      "regex": "(?i).*(session_id|session_key|sessionid).*"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.sensitive-data-logging-user-object",
+   "message": "User object may be logged. User objects often contain password hashes or other sensitive fields. Log only necessary fields.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-532",
+    "owasp": "A09:2021",
+    "category": "security",
+    "confidence": "LOW"
+   },
+   "pattern-either": [
+    {
+     "pattern": "logging.$LEVEL(..., $USER.__dict__, ...)"
+    },
+    {
+     "pattern": "logger.$LEVEL(..., $USER.__dict__, ...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.sensitive-data-print-debug",
+   "message": "Sensitive data in print() statement. Print statements may be left in production code and expose sensitive data to logs or console.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-532",
+    "owasp": "A09:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "print(request.POST)"
+      },
+      {
+       "pattern": "print(dict(request.POST))"
+      },
+      {
+       "pattern": "print(f\"...{request.POST}...\")"
+      },
+      {
+       "pattern": "print(request.COOKIES)"
+      },
+      {
+       "pattern": "print($PASSWORD)"
+      }
+     ]
+    },
+    {
+     "metavariable-regex": {
+      "metavariable": "$PASSWORD",
+      "regex": "(?i).*(password|secret|token).*"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.sensitive-data-exception-logging",
+   "message": "Sensitive data may be exposed in exception logs. Exception messages might contain user input or sensitive context.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-532",
+    "owasp": "A09:2021",
+    "category": "security",
+    "confidence": "LOW"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "logging.exception(..., $SENSITIVE, ...)"
+      },
+      {
+       "pattern": "logger.exception(..., $SENSITIVE, ...)"
+      }
+     ]
+    },
+    {
+     "metavariable-regex": {
+      "metavariable": "$SENSITIVE",
+      "regex": "(?i).*(password|secret|token|credential).*"
+     }
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.ssrf-requests-user-input",
+   "message": "Server-Side Request Forgery (SSRF) vulnerability: User-controlled URL passed to requests library. Attackers can make the server access internal services, cloud metadata endpoints, or other restricted resources.\nVulnerable: requests.get(user_url) Safe: Validate URL against allowlist of permitted domains",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-918",
+    "owasp": "A10:2021",
+    "category": "security",
+    "technology": [
+     "python",
+     "requests"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "HIGH",
+    "references": [
+     "https://owasp.org/www-community/attacks/Server_Side_Request_Forgery",
+     "https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "requests.get($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "requests.post($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "requests.put($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "requests.delete($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "requests.patch($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "requests.head($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "requests.options($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "requests.request($METHOD, $USER_INPUT, ...)"
+      },
+      {
+       "pattern": "$URL = request.$METHOD.get(...)\n...\nrequests.get($URL, ...)\n"
+      },
+      {
+       "pattern": "$URL = request.$METHOD.get(...)\n...\nrequests.post($URL, ...)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.ssrf-urllib-user-input",
+   "message": "SSRF vulnerability: User-controlled URL passed to urllib. Validate URLs against an allowlist before making requests.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-918",
+    "owasp": "A10:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "urllib.request.urlopen($USER_INPUT)"
+      },
+      {
+       "pattern": "urllib.request.urlopen($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "$URL = request.$METHOD.get(...)\n...\nurllib.request.urlopen($URL)\n"
+      },
+      {
+       "pattern": "urllib.request.Request($USER_INPUT, ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.ssrf-httpx-user-input",
+   "message": "SSRF vulnerability: User-controlled URL passed to httpx client.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-918",
+    "owasp": "A10:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "httpx.get($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "httpx.post($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "httpx.AsyncClient().get($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "$URL = request.$METHOD.get(...)\n...\nhttpx.get($URL, ...)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.ssrf-aiohttp-user-input",
+   "message": "SSRF vulnerability: User-controlled URL in aiohttp request.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-918",
+    "owasp": "A10:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "$SESSION.get($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "$SESSION.post($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "aiohttp.ClientSession().get($USER_INPUT)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-request-to-ssrf",
+   "message": "SSRF: HTTP request data flows to outbound HTTP request URL. Implement URL validation with domain allowlisting.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-918",
+    "owasp": "A10:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    },
+    {
+     "pattern": "request.data.get(...)"
+    },
+    {
+     "pattern": "request.data[...]"
+    },
+    {
+     "pattern": "request.form.get(...)"
+    },
+    {
+     "pattern": "request.args.get(...)"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "requests.get($URL, ...)",
+     "focus-metavariable": "$URL"
+    },
+    {
+     "pattern": "requests.post($URL, ...)",
+     "focus-metavariable": "$URL"
+    },
+    {
+     "pattern": "requests.request($METHOD, $URL, ...)",
+     "focus-metavariable": "$URL"
+    },
+    {
+     "pattern": "urllib.request.urlopen($URL, ...)",
+     "focus-metavariable": "$URL"
+    },
+    {
+     "pattern": "httpx.get($URL, ...)",
+     "focus-metavariable": "$URL"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "validate_url(...)"
+    },
+    {
+     "pattern": "is_allowed_url(...)"
+    },
+    {
+     "pattern": "urlparse(...)"
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.xxe-lxml-etree",
+   "message": "XML External Entity (XXE) vulnerability: lxml.etree parsing is vulnerable to XXE attacks by default. External entities can be used to read local files, perform SSRF, or cause denial of service.\nVulnerable: etree.fromstring(user_xml) Safe: Use defusedxml or configure parser with resolve_entities=False",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-611",
+    "owasp": "A05:2021",
+    "category": "security",
+    "technology": [
+     "python",
+     "lxml"
+    ],
+    "confidence": "HIGH",
+    "likelihood": "HIGH",
+    "impact": "HIGH",
+    "references": [
+     "https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing",
+     "https://lxml.de/FAQ.html#how-do-i-use-lxml-safely-as-a-web-service-endpoint"
+    ]
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "lxml.etree.fromstring($USER_INPUT)"
+      },
+      {
+       "pattern": "lxml.etree.fromstring($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "etree.fromstring($USER_INPUT)"
+      },
+      {
+       "pattern": "etree.fromstring($USER_INPUT, parser=etree.XMLParser())"
+      },
+      {
+       "pattern": "lxml.etree.parse($USER_INPUT)"
+      },
+      {
+       "pattern": "etree.parse($USER_INPUT)"
+      },
+      {
+       "pattern": "lxml.etree.XML($USER_INPUT)"
+      },
+      {
+       "pattern": "etree.XML($USER_INPUT)"
+      },
+      {
+       "pattern": "$DATA = request.body\n...\netree.fromstring($DATA)\n"
+      },
+      {
+       "pattern": "$DATA = request.body\n...\nlxml.etree.fromstring($DATA)\n"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.xxe-xml-etree",
+   "message": "Potential XXE: xml.etree.ElementTree parsing of user input. While ElementTree is less vulnerable than lxml, it can still be exploited in certain configurations. Use defusedxml for safety.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-611",
+    "owasp": "A05:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "xml.etree.ElementTree.fromstring($USER_INPUT)"
+      },
+      {
+       "pattern": "ET.fromstring($USER_INPUT)"
+      },
+      {
+       "pattern": "ElementTree.fromstring($USER_INPUT)"
+      },
+      {
+       "pattern": "xml.etree.ElementTree.parse($USER_INPUT)"
+      },
+      {
+       "pattern": "ET.parse($USER_INPUT)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.xxe-xml-minidom",
+   "message": "XXE vulnerability: xml.dom.minidom parsing of untrusted XML. Use defusedxml.minidom instead.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-611",
+    "owasp": "A05:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "xml.dom.minidom.parseString($USER_INPUT)"
+      },
+      {
+       "pattern": "minidom.parseString($USER_INPUT)"
+      },
+      {
+       "pattern": "xml.dom.minidom.parse($USER_INPUT)"
+      },
+      {
+       "pattern": "minidom.parse($USER_INPUT)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.xxe-xml-sax",
+   "message": "XXE vulnerability: xml.sax parsing of untrusted XML. SAX parsers can be vulnerable to XXE unless properly configured.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-611",
+    "owasp": "A05:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "xml.sax.parseString($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "xml.sax.parse($USER_INPUT, ...)"
+      },
+      {
+       "pattern": "sax.parseString($USER_INPUT, ...)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.xxe-unsafe-xmlparser",
+   "message": "Unsafe XML parser configuration: resolve_entities is enabled. Set resolve_entities=False and no_network=True for safety.",
+   "severity": "WARNING",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-611",
+    "owasp": "A05:2021",
+    "category": "security",
+    "confidence": "MEDIUM"
+   },
+   "patterns": [
+    {
+     "pattern-either": [
+      {
+       "pattern": "etree.XMLParser(resolve_entities=True)"
+      },
+      {
+       "pattern": "lxml.etree.XMLParser(resolve_entities=True)"
+      },
+      {
+       "pattern": "XMLParser(resolve_entities=True)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "lg.ext.python-request-to-xxe",
+   "message": "XXE vulnerability: HTTP request body flows to XML parser. Use defusedxml or configure parser to disable external entities.",
+   "severity": "ERROR",
+   "languages": [
+    "python"
+   ],
+   "metadata": {
+    "cwe": "CWE-611",
+    "owasp": "A05:2021",
+    "category": "security",
+    "confidence": "HIGH"
+   },
+   "mode": "taint",
+   "pattern-sources": [
+    {
+     "pattern": "request.body"
+    },
+    {
+     "pattern": "request.data"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.FILES[...]"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "etree.fromstring($DATA, ...)",
+     "focus-metavariable": "$DATA"
+    },
+    {
+     "pattern": "lxml.etree.fromstring($DATA, ...)",
+     "focus-metavariable": "$DATA"
+    },
+    {
+     "pattern": "xml.etree.ElementTree.fromstring($DATA)",
+     "focus-metavariable": "$DATA"
+    },
+    {
+     "pattern": "minidom.parseString($DATA)",
+     "focus-metavariable": "$DATA"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "defusedxml.ElementTree.fromstring(...)"
+    },
+    {
+     "pattern": "defusedxml.lxml.fromstring(...)"
+    },
+    {
+     "pattern": "defusedxml.minidom.parseString(...)"
+    }
+   ]
+  }
+ ]
+}

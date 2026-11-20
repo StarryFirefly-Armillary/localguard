@@ -1,0 +1,18 @@
+{
+  "allowed_roots": ["C:/work/projects"],
+  "data_dir": "C:/work/.localguard",
+  "offline": true,
+  "model_tier": "rules",
+  "keep_model_resident": false,
+  "model_endpoint": "http://127.0.0.1:1234/v1",
+  "model_name": "qwen3.5-4b",
+  "model_context": 4096,
+  "model_binary": "",
+  "model_path": "",
+  "model_4gb_path": "",
+  "mmproj_path": "",
+  "scanner_timeout": 120,
+  "binaries": {},
+  "grammars": {},
+  "port": 8765
+}

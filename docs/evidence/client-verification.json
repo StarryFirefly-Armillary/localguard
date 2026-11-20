@@ -1,0 +1,46 @@
+{
+  "scope": "Actual native MCP calls from two user-selected existing clients; not SDK simulations",
+  "clients": [
+    {
+      "client": "Qoder Desktop",
+      "logged_client_name": "redacted-mcp-client",
+      "audit_id": "f79efbc7d5f94d7aa137a56158daa642",
+      "discovered_tools": 8,
+      "initial_status": "queued",
+      "final_status": "completed",
+      "total_issues": 38,
+      "tools": [
+        "audit_repository",
+        "get_audit_status",
+        "view_file"
+      ],
+      "verified_location": {
+        "path": "vulnerable.c",
+        "line": 4
+      },
+      "evidence": "Conversation tool outputs and matching native server tool_call records; all validation=passed"
+    },
+    {
+      "client": "DeepSeek Harness",
+      "logged_client_name": "redacted-mcp-client",
+      "audit_id": "28a621cd58df4d6e8dfc9c2048f859d9",
+      "initial_status": "queued",
+      "final_status": "completed",
+      "total_issues": 38,
+      "tools": [
+        "audit_repository",
+        "get_audit_status",
+        "view_file"
+      ],
+      "verified_location": {
+        "path": "vulnerable.c",
+        "line": 4
+      },
+      "evidence": "Browser conversation and matching native server tool_call records; all validation=passed"
+    }
+  ],
+  "limitations": [
+    "Only generated, nonexecuted fixtures were reviewed in these client tests.",
+    "This verifies client interoperability, not comprehensive vulnerability detection or model training quality."
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "installed_module": "<repo>/.localguard/offline-validation/app-env/Lib/site-packages/localguard/__init__.py",
+  "audit_id": "447b254c199640c39b985c24afdd43f0",
+  "initial_status": "queued",
+  "final_status": "completed",
+  "tools_discovered": 8,
+  "total_issues": 69,
+  "coverage": {
+    "files": 38,
+    "excluded_files": 0,
+    "scanners": {
+      "patterns": "completed",
+      "semgrep": "completed",
+      "gitleaks": "completed",
+      "cppcheck": "completed",
+      "grype": "completed"
+    },
+    "depth": "standard"
+  },
+  "validated_location": {
+    "path": "vulnerable.c",
+    "line": 4
+  },
+  "elapsed_seconds": 14.91,
+  "offline": true,
+  "model_tier": "4gb",
+  "limitations": [
+    "No GPU model is loaded by the 4gb rules route.",
+    "This check does not attest OS-level network sandboxing."
+  ]
+}

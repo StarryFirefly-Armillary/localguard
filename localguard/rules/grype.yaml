@@ -1,0 +1,5 @@
+check-for-app-update: false
+db:
+  auto-update: false
+external-sources:
+  enable: false

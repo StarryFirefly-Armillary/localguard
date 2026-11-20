@@ -1,0 +1,4 @@
+# Static manifest for mocked advisory responses; NEVER install.
+
+flask==2.0.0
+requests==2.19.1

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="LocalGuard 本地代码安全审查工作台，以确定性扫描和可验证证据为依据。">
+  <title>LocalGuard · 本地安全审查</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳转到审查结果</a>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="LocalGuard 首页">
+      <svg class="brand-mark" viewBox="0 0 32 36" fill="none" aria-hidden="true"><path d="M16 2 29 7v10c0 8-8 14-13 17C11 31 3 25 3 17V7L16 2Z" stroke="currentColor" stroke-width="1.8"/><path d="m10 17 4 4 8-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>LocalGuard<span class="brand-sub">本地代码安全审查</span></span>
+    </a>
+    <div class="header-meta">
+      <span class="local-badge"><span class="small-square" aria-hidden="true"></span>离线优先 · 无外部资源</span>
+      <span id="connection-status" class="connection-status" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connection-text">连接本地服务中</span></span>
+    </div>
+  </header>
+
+  <div id="connection-alert" class="global-alert" role="alert" hidden></div>
+  <noscript><div class="global-alert">请启用 JavaScript 以连接本地审查服务。本页面不加载任何第三方资源。</div></noscript>
+
+  <div class="app-layout">
+    <aside class="config-sidebar" aria-labelledby="config-title">
+      <div class="section-heading"><div><p class="eyebrow">NEW REVIEW</p><h1 id="config-title">发起安全审查</h1></div><span class="step-index" aria-hidden="true">01</span></div>
+      <div class="mode-tabs" role="tablist" aria-label="审查模式">
+        <button id="form-tab" class="mode-tab" type="button" role="tab" aria-selected="true" aria-controls="form-panel" tabindex="0">表单审查</button>
+        <button id="chat-tab" class="mode-tab" type="button" role="tab" aria-selected="false" aria-controls="chat-panel" tabindex="-1">对话助手</button>
+      </div>
+      <div class="shared-fields">
+        <label class="field-label" for="target">目标仓库 / 本地目录 <span class="required-mark">*</span></label>
+        <input id="target" name="target" form="audit-form" type="text" placeholder="C:\Projects\your-repository" autocomplete="off" spellcheck="false" required maxlength="4096" aria-describedby="target-help">
+        <p id="target-help" class="field-help">输入绝对路径；访问范围由本地服务的目录白名单限制。</p>
+        <label class="field-label" for="model-tier">模型档位 <span class="label-note">按资源选择</span></label>
+        <select id="model-tier" name="model_tier" form="audit-form" aria-describedby="model-help">
+          <option value="rules">规则模式 · 不加载模型</option>
+          <option value="4gb">4 GB · 轻量路由与解释</option>
+          <option value="8gb">8 GB · 4B Q4 模型</option>
+        </select>
+        <p id="model-help" class="field-help">模型只做编排与解释，不生成问题定位。</p>
+      </div>
+
+      <section id="form-panel" role="tabpanel" aria-labelledby="form-tab">
+        <form id="audit-form">
+          <fieldset class="plain-fieldset">
+            <legend class="field-label">审查深度</legend>
+            <div class="depth-options">
+              <label><input type="radio" name="depth" value="quick"><span><strong>快速</strong><small>关键模式</small></span></label>
+              <label><input type="radio" name="depth" value="standard" checked><span><strong>标准</strong><small>常规审查</small></span></label>
+              <label><input type="radio" name="depth" value="deep"><span><strong>深入</strong><small>扩展分析</small></span></label>
+            </div>
+          </fieldset>
+          <fieldset class="plain-fieldset scanner-fieldset">
+            <legend class="field-label">确定性扫描器 <span class="label-note" id="scanner-count">7 项</span></legend>
+            <div id="scanner-options" class="scanner-options">
+              <label class="scanner-option" data-scanner="patterns"><input type="checkbox" name="scanners" value="patterns" checked><span><strong>Patterns</strong><small>可疑代码与后门模式</small></span><span class="scanner-state">内置规则</span></label>
+              <label class="scanner-option" data-scanner="semgrep"><input type="checkbox" name="scanners" value="semgrep" checked><span><strong>Semgrep</strong><small>多语言静态分析</small></span><span class="scanner-state"></span></label>
+              <label class="scanner-option" data-scanner="gitleaks"><input type="checkbox" name="scanners" value="gitleaks" checked><span><strong>Gitleaks</strong><small>密钥与凭据泄漏</small></span><span class="scanner-state"></span></label>
+              <label class="scanner-option" data-scanner="gosec"><input type="checkbox" name="scanners" value="gosec" checked><span><strong>Gosec</strong><small>Go 安全检查</small></span><span class="scanner-state"></span></label>
+              <label class="scanner-option" data-scanner="cppcheck"><input type="checkbox" name="scanners" value="cppcheck" checked><span><strong>Cppcheck</strong><small>C / C++ 静态分析</small></span><span class="scanner-state"></span></label>
+              <label class="scanner-option" data-scanner="pip-audit"><input type="checkbox" name="scanners" value="pip-audit" checked><span><strong>pip-audit</strong><small>Python 依赖漏洞</small></span><span class="scanner-state"></span></label>
+              <label class="scanner-option" data-scanner="grype"><input type="checkbox" name="scanners" value="grype" checked><span><strong>Grype</strong><small>软件包漏洞检查</small></span><span class="scanner-state"></span></label>
+            </div>
+          </fieldset>
+          <div class="scan-extras">
+            <label class="check-row"><input id="include-dependencies" type="checkbox" checked><span>包含依赖审计<small>仅使用本地可用的漏洞数据</small></span></label>
+            <label class="check-row"><input id="incremental" type="checkbox" aria-controls="incremental-fields" aria-expanded="false"><span>增量审查<small>仅关注两个 Git 引用之间的变更</small></span></label>
+            <div id="incremental-fields" class="revision-fields" hidden>
+              <label for="base">Base<input id="base" type="text" value="HEAD~1" maxlength="200" autocomplete="off" spellcheck="false" disabled></label>
+              <label for="head">Head<input id="head" type="text" value="HEAD" maxlength="200" autocomplete="off" spellcheck="false" disabled></label>
+            </div>
+          </div>
+          <div id="submit-alert" class="inline-alert" role="alert" hidden></div>
+          <button id="start-audit" class="button primary full-width" type="submit" disabled><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m7 4 8 6-8 6V4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span id="start-audit-label">连接服务中…</span></button>
+          <p class="submit-note">固定工具流水线 · 不经模型选择扫描器</p>
+        </form>
+      </section>
+
+      <section id="chat-panel" role="tabpanel" aria-labelledby="chat-tab" hidden>
+        <div class="mode-description"><strong>用自然语言说明审查意图</strong><p>助手负责调用本地工具。只有审查接口返回的结构化证据会进入问题列表。</p></div>
+        <form id="chat-form">
+          <label class="field-label" for="chat-message">你想检查什么？</label>
+          <textarea id="chat-message" rows="5" maxlength="4000" required placeholder="检查这个项目中的凭据泄漏和命令注入风险。" aria-describedby="chat-help"></textarea>
+          <p id="chat-help" class="field-help">Ctrl / ⌘ + Enter 发送 · 最近 12 条对话作为上下文</p>
+          <button id="send-chat" class="button primary full-width" type="submit" disabled>发送给本地助手</button>
+          <p id="chat-busy-note" class="field-help" hidden>当前审查结束后可继续对话，避免重复创建任务。</p>
+        </form>
+        <details class="image-assistant">
+          <summary>图片辅助解读 <span class="label-note">非审查证据</span></summary>
+          <p class="field-help">可上传架构图或终端截图。图片仅用于解释，不生成代码问题与行号。</p>
+          <label id="image-dropzone" class="dropzone" for="image-file"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="1.5" stroke="currentColor"/><path d="m4 17 5-5 4 4 3-3 5 5" stroke="currentColor" stroke-width="1.5"/></svg><span>拖入图片，或点击选择</span><small>PNG / JPEG / WebP · 最大 5 MB</small><input id="image-file" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp"></label>
+          <div id="image-selection" class="image-selection" hidden><img id="image-preview" alt="待解读的本地图片"><span id="image-name"></span><button id="remove-image" class="text-button" type="button">移除</button></div>
+          <label class="field-label" for="image-question">关于这张图片的问题</label>
+          <textarea id="image-question" rows="2" maxlength="2000" placeholder="解释图中的信任边界与潜在风险。"></textarea>
+          <button id="analyze-image" class="button secondary full-width" type="button" disabled>解读图片</button>
+          <div id="image-alert" class="inline-alert" role="alert" hidden></div>
+          <div id="image-result" class="image-result prose" role="status" hidden></div>
+        </details>
+      </section>
+
+      <details class="runtime-details">
+        <summary>本地运行环境 <span id="tool-count" class="label-note">待连接</span></summary>
+        <p>允许访问的根目录</p><ul id="allowed-roots" class="allowed-roots"><li>等待服务返回配置</li></ul>
+        <p id="runtime-note" class="field-help">扫描器不可用、超时或覆盖受限，不等于扫描通过。配置由服务端管理。</p>
+      </details>
+      <div class="sidebar-footnote"><span class="small-square" aria-hidden="true"></span>代码留在本机 · 证据优先于推断</div>
+    </aside>
+
+    <main id="main-content" class="main-content" tabindex="-1">
+      <div class="workspace-heading">
+        <div><p class="eyebrow">SECURITY WORKSPACE</p><h2>审查工作台<span class="heading-dot">.</span></h2><p class="workspace-subtitle">从静态发现到人工确认，每一个结论都有依据。</p></div>
+        <div class="export-controls"><label class="visually-hidden" for="export-format">报告导出格式</label><select id="export-format"><option value="json">JSON</option><option value="markdown">Markdown</option><option value="sarif">SARIF</option></select><button id="export-report" class="button secondary" type="button" disabled><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3v9m-3-3 3 3 3-3M4 13v4h12v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>导出报告</button></div>
+      </div>
+      <div id="export-alert" class="inline-alert" role="alert" hidden></div>
+      <section class="summary-grid" aria-label="审查结果摘要">
+        <div class="summary-card"><span class="summary-label">发现问题</span><strong id="stat-total">—</strong><small id="stat-total-note">等待审查</small></div>
+        <div class="summary-card"><span class="summary-label"><span class="severity-dot high" aria-hidden="true"></span>高风险 / 严重</span><strong id="stat-high">—</strong><small>优先人工复核</small></div>
+        <div class="summary-card"><span class="summary-label">待复核</span><strong id="stat-unreviewed">—</strong><small id="stat-review-note">尚无审查结果</small></div>
+        <div class="summary-card"><span class="summary-label">完成模块</span><strong id="stat-modules">—</strong><small>完成不代表无风险</small></div>
+      </section>
+
+      <section class="panel activity-panel" aria-labelledby="activity-title">
+        <div class="panel-heading"><div class="title-with-indicator"><span id="activity-indicator" class="activity-indicator" aria-hidden="true"></span><h3 id="activity-title">等待开始审查</h3><span id="audit-status" class="badge neutral">未开始</span></div><span id="audit-id" class="audit-id mono"></span></div>
+        <p id="audit-target" class="audit-target mono">选择目标目录，建立第一条证据链。</p>
+        <div class="progress-row"><progress id="audit-progress" max="100" value="0" aria-label="审查进度"></progress><span id="progress-label">—</span></div>
+        <div class="activity-footer"><ol class="pipeline" aria-label="审查流程"><li id="pipeline-queue">任务排队</li><li id="pipeline-scan">确定性扫描</li><li id="pipeline-report">证据报告</li></ol><span id="queue-label" class="muted">就绪后从左侧发起</span></div>
+        <div id="completed-modules" class="module-list" aria-label="已完成的扫描模块" hidden></div>
+        <div id="poll-alert" class="inline-alert" role="alert" hidden></div>
+        <div id="audit-error" class="inline-alert" role="alert" hidden></div>
+        <div id="coverage-panel" class="coverage-panel" hidden><h4>覆盖范围提醒</h4><ul id="coverage-warnings"></ul><p>未覆盖、不可用或失败的检查，不能视为安全通过。</p></div>
+      </section>
+
+      <section id="chat-transcript" class="panel chat-transcript" aria-labelledby="conversation-title" hidden>
+        <div class="panel-heading"><h3 id="conversation-title">本地助手</h3><button id="clear-chat" class="text-button" type="button">清空对话</button></div>
+        <p class="panel-description">解释不等于证据。可点击定位只来自下方结构化审查报告。</p>
+        <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions"><div id="chat-empty" class="chat-empty">描述你关心的风险，让工具负责验证。</div></div>
+      </section>
+
+      <div class="review-grid">
+        <section class="panel findings-panel" aria-labelledby="findings-title">
+          <div class="panel-heading"><h3 id="findings-title">问题与复核 <span id="issue-count" class="count-badge">0</span></h3><span class="section-kicker">TOOL EVIDENCE</span></div>
+          <div class="findings-toolbar">
+            <div id="severity-filters" class="severity-filters" role="group" aria-label="按严重程度筛选"><button type="button" data-severity="all" aria-pressed="true">全部</button><button type="button" data-severity="critical" aria-pressed="false">严重</button><button type="button" data-severity="high" aria-pressed="false">高危</button><button type="button" data-severity="medium" aria-pressed="false">中危</button><button type="button" data-severity="low" aria-pressed="false">低危</button><button type="button" data-severity="info" aria-pressed="false">提示</button></div>
+            <div class="filter-row"><label class="visually-hidden" for="issue-search">搜索标题、规则或文件路径</label><input id="issue-search" type="search" placeholder="搜索问题或文件…" maxlength="300"><label class="visually-hidden" for="review-filter">复核状态</label><select id="review-filter"><option value="all">全部复核状态</option><option value="unreviewed">待复核</option><option value="confirmed">已确认</option><option value="false_positive">误报</option></select></div>
+          </div>
+          <p id="results-note" class="results-note">按风险等级、置信度与文件排序</p>
+          <div id="issues-list" class="issues-list"><div class="empty-state"><div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none"><path d="M11 5h13l6 6v24H11V5Z" stroke="currentColor" stroke-width="1.5"/><path d="M24 5v7h6M16 18h9m-9 5h9m-9 5h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div><h4>让每个结论都有据可查</h4><p>发起审查后，这里将展示工具验证的问题、真实文件定位与人工复核入口。</p><span class="empty-caption">没有示例数据，只有实际发现</span></div></div>
+        </section>
+
+        <section id="source-panel" class="panel source-panel" aria-labelledby="source-title" tabindex="-1">
+          <div class="panel-heading"><div><h3 id="source-title">证据浏览器</h3><p class="panel-description">只读预览 · 真实行号 · 服务端 AST 高亮</p></div><button id="toggle-tree" class="text-button" type="button" aria-expanded="true" aria-controls="file-tree-pane">隐藏目录</button></div>
+          <div class="source-workspace">
+            <nav id="file-tree-pane" class="file-tree-pane" aria-label="审查文件目录"><div class="tree-heading"><span>文件目录</span><button id="refresh-tree" class="icon-button" type="button" title="刷新目录" aria-label="刷新文件目录" disabled><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M16 7a6 6 0 1 0 0 6M16 3v4h-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><div id="file-tree" class="file-tree"><p class="tree-placeholder">审查返回根目录后加载文件。</p></div><p id="tree-note" class="tree-note">最多展开 4 层目录</p></nav>
+            <div class="preview-pane">
+              <div id="file-header" class="file-header"><span id="file-path" class="mono">尚未选择文件</span><span id="file-meta" class="muted">只读</span></div>
+              <div id="preview-warning" class="preview-warning" role="status" hidden></div>
+              <div id="preview-alert" class="inline-alert" role="alert" hidden></div>
+              <div id="code-preview" class="code-preview" tabindex="0" aria-label="文件代码预览"><div class="empty-state preview-empty"><div class="code-symbol" aria-hidden="true">{ }</div><h4>回到代码，验证发现</h4><p>点击问题中的 <span class="mono">文件:行号</span> 或从目录选择文件。先读取真实片段，再精确定位。</p></div></div>
+              <div id="preview-pagination" class="preview-pagination" hidden><div class="page-controls"><button id="previous-page" class="text-button" type="button">上一段</button><span id="page-range" class="mono"></span><button id="next-page" class="text-button" type="button">下一段</button></div><form id="jump-form" class="jump-form"><label for="jump-line">行</label><input id="jump-line" type="number" min="1" step="1" required aria-label="跳转到行号"><button class="text-button" type="submit">跳转</button></form></div>
+            </div>
+          </div>
+          <div class="source-footer"><span id="source-hash" class="mono">文件内容仅从本地工具读取</span><span>每次最多 200 行</span></div>
+        </section>
+      </div>
+      <footer class="workspace-footer"><span>LocalGuard / 确定性优先，人工决策</span><span>扫描结果不替代完整安全评估</span></footer>
+    </main>
+  </div>
+  <div id="announcement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

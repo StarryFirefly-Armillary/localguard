@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "localguard": {
+      "command": "python",
+      "args": ["-m", "localguard", "--config", "C:/work/localguard.json", "mcp"],
+      "env": {
+        "PYTHONPATH": "C:/work/LocalGuard"
+      }
+    }
+  }
+}

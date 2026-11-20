@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "description": "Limited, line-oriented lexical rules, not an AST, taint, CVE, or external-tool replacement. Credential literals require at least 12 characters, letters and digits. Comments with a leading comment marker are skipped; embedded comments and strings are not parsed.",
+  "rules": [
+    {
+      "id": "patterns.hardcoded-credential",
+      "title": "Credential-like literal assigned to a secret variable",
+      "regex": "(?i)\\b(?:api_key|api_token|access_token|auth_token|client_secret|secret_key|password|passwd|aws_secret_access_key)\\b[\\\"']?(?:[ \\t]*:[ \\t]*&?[A-Za-z_][A-Za-z0-9_<>]{0,24})?[ \\t]*(?::=|=|:)[ \\t]*[\\\"'](?=[A-Za-z0-9_+/=.-]{0,127}[A-Za-z])(?=[A-Za-z0-9_+/=.-]{0,127}[0-9])(?P<secret>[A-Za-z0-9_+/=.-]{12,128})[\\\"']",
+      "exclude_capture_regex": "(?i)example|placeholder|changeme|redacted|not[-_]?a[-_]?secret|dummy",
+      "severity": "high",
+      "category": "credential_leak",
+      "cwe": "CWE-798",
+      "confidence": 0.88,
+      "rulesets": ["default", "security"],
+      "explanation": "A named credential variable contains a non-placeholder literal. This lexical match does not establish that the credential is valid.",
+      "remediation": "Verify the literal; if real, revoke it and load credentials from a managed secret store."
+    },
+    {
+      "id": "patterns.eval-decode",
+      "title": "Decoded data passed directly to dynamic evaluation",
+      "regex": "(?i)\\b(?:eval|exec)\\s*\\(\\s*(?:(?:base64|Base64)\\.)?(?:b64decode|base64_decode|atob|decode64)\\s*\\(",
+      "severity": "high",
+      "category": "backdoor",
+      "cwe": "CWE-95",
+      "confidence": 0.9,
+      "rulesets": ["default", "security", "backdoor"],
+      "explanation": "Direct decode-and-evaluate syntax can conceal executable content. The match alone does not prove malicious intent or input reachability.",
+      "remediation": "Remove dynamic evaluation; decode and validate data with a non-executable format."
+    },
+    {
+      "id": "patterns.reverse-shell",
+      "title": "Reverse-shell command indicator",
+      "regex": "(?i)(?:\\b(?:ba)?sh[ \\t]+-i[^\\r\\n]{0,100}/dev/tcp/[A-Za-z0-9.:-]+/[0-9]{1,5}|\\b(?:nc|ncat|netcat)[ \\t]+[^\\r\\n]{0,120}[ \\t]-e[ \\t]+(?:/bin/)?(?:ba)?sh\\b)",
+      "severity": "critical",
+      "category": "backdoor",
+      "cwe": "CWE-506",
+      "confidence": 0.91,
+      "rulesets": ["default", "security", "backdoor"],
+      "explanation": "The source contains a command-shaped shell redirection or netcat shell-execution indicator. Stored examples may also match; execution is not inferred.",
+      "remediation": "Investigate provenance and reachability; remove unauthorized shell/network execution."
+    },
+    {
+      "id": "patterns.auth-bypass",
+      "title": "Explicit authentication-bypass flag enabled",
+      "regex": "(?i)\\b(?:auth_bypass|bypass_auth|disable_auth|skip_authentication|debug_auth_bypass)\\b[\\\"']?(?:[ \\t]*:[ \\t]*[A-Za-z_][A-Za-z0-9_]{0,24})?[ \\t]*(?::=|=|:)[ \\t]*(?:true|1)\\b",
+      "severity": "high",
+      "category": "backdoor",
+      "cwe": "CWE-288",
+      "confidence": 0.85,
+      "rulesets": ["default", "security", "backdoor"],
+      "explanation": "An explicitly named authentication-bypass flag is enabled. This does not establish whether production code reads the flag.",
+      "remediation": "Remove the bypass or isolate it to a non-production test harness with mandatory authentication in production."
+    }
+  ]
+}

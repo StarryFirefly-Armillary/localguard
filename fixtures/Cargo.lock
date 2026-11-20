@@ -1,0 +1,6 @@
+# Static manifest for mocked advisory responses; NEVER build.
+version = 3
+
+[[package]]
+name = "fixture-crate"
+version = "1.2.3"

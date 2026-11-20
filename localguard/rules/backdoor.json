@@ -1,0 +1,28 @@
+{
+  "rules": [
+    {
+      "id": "localguard.backdoor.eval-decode",
+      "languages": ["generic"],
+      "pattern-regex": "(?im)^(?![ \\t]*(?://|#|/\\*|\\*|--))[^\\r\\n]*\\b(?:eval|exec)\\s*\\(\\s*(?:(?:base64|Base64)\\.)?(?:b64decode|base64_decode|atob|decode64)\\s*\\(",
+      "message": "Decoded data passed to dynamic evaluation; investigate reachability and provenance.",
+      "severity": "ERROR",
+      "metadata": {"category": "backdoor", "cwe": "CWE-95", "confidence": "HIGH", "remediation": "Replace evaluation with non-executable data parsing."}
+    },
+    {
+      "id": "localguard.backdoor.reverse-shell",
+      "languages": ["generic"],
+      "pattern-regex": "(?im)^(?![ \\t]*(?://|#|/\\*|\\*|--))[^\\r\\n]*(?:\\b(?:ba)?sh[ \\t]+-i[^\\r\\n]{0,100}/dev/tcp/[A-Za-z0-9.:-]+/[0-9]{1,5}|\\b(?:nc|ncat|netcat)[ \\t]+[^\\r\\n]{0,120}[ \\t]-e[ \\t]+(?:/bin/)?(?:ba)?sh\\b)",
+      "message": "Reverse-shell command indicator; a stored string alone is not evidence of execution.",
+      "severity": "ERROR",
+      "metadata": {"category": "backdoor", "cwe": "CWE-506", "confidence": "HIGH", "remediation": "Remove unauthorized shell/network execution after reviewing provenance."}
+    },
+    {
+      "id": "localguard.backdoor.auth-bypass",
+      "languages": ["generic"],
+      "pattern-regex": "(?im)^(?![ \\t]*(?://|#|/\\*|\\*|--))[^\\r\\n]*\\b(?:auth_bypass|bypass_auth|disable_auth|skip_authentication|debug_auth_bypass)\\b[\"']?(?:[ \\t]*:[ \\t]*[A-Za-z_][A-Za-z0-9_]{0,24})?[ \\t]*(?::=|=|:)[ \\t]*(?:true|1)\\b",
+      "message": "Explicit authentication-bypass flag enabled; verify whether production code uses it.",
+      "severity": "ERROR",
+      "metadata": {"category": "backdoor", "cwe": "CWE-288", "confidence": "HIGH", "remediation": "Remove authentication bypasses from production paths."}
+    }
+  ]
+}

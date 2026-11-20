@@ -1,0 +1,20 @@
+{
+  "scanner": "patterns",
+  "ruleset": "default",
+  "notice": "Static, non-executed fixtures. Tokens are invented and the network indicator uses documentation-only 192.0.2.1. These are lexical detections, not proof of exploitable behavior. External scanner outputs are MOCKED in unit tests, not integration results.",
+  "languages": ["Python", "JavaScript", "TypeScript", "Java", "Go", "Rust", "C", "C++", "PHP", "Ruby", "Solidity"],
+  "expected": {
+    "vulnerable.py": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4], "patterns.eval-decode": [5]},
+    "vulnerable.js": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4], "patterns.eval-decode": [5]},
+    "vulnerable.ts": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4], "patterns.eval-decode": [5]},
+    "vulnerable.java": {"patterns.hardcoded-credential": [3], "patterns.auth-bypass": [4], "patterns.reverse-shell": [5]},
+    "vulnerable.go": {"patterns.hardcoded-credential": [3], "patterns.auth-bypass": [4], "patterns.reverse-shell": [5]},
+    "vulnerable.rs": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4]},
+    "vulnerable.c": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4]},
+    "vulnerable.cpp": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4]},
+    "vulnerable.php": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4], "patterns.eval-decode": [5]},
+    "vulnerable.rb": {"patterns.hardcoded-credential": [2], "patterns.auth-bypass": [3], "patterns.reverse-shell": [4], "patterns.eval-decode": [5]},
+    "vulnerable.sol": {"patterns.hardcoded-credential": [3], "patterns.auth-bypass": [4], "patterns.reverse-shell": [5]},
+    "clean.py": {}, "clean.js": {}, "clean.ts": {}, "clean.java": {}, "clean.go": {}, "clean.rs": {}, "clean.c": {}, "clean.cpp": {}, "clean.php": {}, "clean.rb": {}, "clean.sol": {}
+  }
+}

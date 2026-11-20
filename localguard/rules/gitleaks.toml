@@ -1,0 +1,3 @@
+title = "LocalGuard: gitleaks built-in rules, no repository extensions"
+[extend]
+useDefault = true
