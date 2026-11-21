@@ -514,7 +514,8 @@ class LocalModel:
                       'explanation': {'type': 'string', 'minLength': 1, 'maxLength': 1200},
                       'remediation': {'type': 'string', 'minLength': 1, 'maxLength': 800}}
         if triage:
-            item_required += ['verdict', 'confidence', 'reason']
+            # Triage fields stay optional: a malformed verdict is dropped
+            # per-item above rather than failing the whole explanation batch.
             item_props.update({
                 'verdict': {'type': 'string', 'enum': ['likely_true', 'likely_false', 'uncertain']},
                 'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
@@ -557,6 +558,23 @@ class LocalModel:
                 response = await self._infer(messages, [], tier, structured=True, release=False)
                 try:
                     updates = json.loads(response['choices'][0]['message']['content'])
+                    if triage and isinstance(updates.get('explanations'), list):
+                        # Triage is advisory: normalize per-item so one malformed
+                        # verdict can never invalidate the whole explanation batch.
+                        valid_verdicts = {'likely_true', 'likely_false', 'uncertain'}
+                        for item in updates['explanations']:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get('verdict') not in valid_verdicts:
+                                for key in ('verdict', 'confidence', 'reason'):
+                                    item.pop(key, None)
+                                continue
+                            conf = item.get('confidence')
+                            if not isinstance(conf, (int, float)) or isinstance(conf, bool) or not 0 <= conf <= 1:
+                                item.pop('confidence', None)
+                            reason = item.get('reason')
+                            if isinstance(reason, str):
+                                item['reason'] = (position.sub('[已省略位置]', reason).strip() or '模型未提供理由')[:2000]
                     validate(updates, schema)
                     expected = {record['id'] for record in batch}
                     actual = [item['id'] for item in updates['explanations']]
@@ -566,7 +584,7 @@ class LocalModel:
                         for field in ('explanation', 'remediation'):
                             if position.search(item[field]):
                                 raise ValueError('Model explanation contains prohibited prose locations')
-                        if triage:
+                        if triage and 'reason' in item:
                             # Advisory triage must never break the deterministic
                             # report. A reason that slips a location mention is
                             # sanitized rather than failing the whole batch.

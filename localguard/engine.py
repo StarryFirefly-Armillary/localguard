@@ -297,21 +297,27 @@ class AuditEngine:
                                        session=session, reason=str(triage_exc)[:300], tier=tier)
                         want_triage = False
                         explanations = await model.explain_issues(records, tier, triage=False)
+                    triage_records = []
                     for issue in result['issues']:
                         update = explanations[issue['id']]
                         issue.update(explanation=update['explanation'], remediation=update['remediation'])
                         if want_triage and 'verdict' in update:
                             issue['triage'] = {
                                 'verdict': update['verdict'],
-                                'confidence': update['confidence'],
-                                'reason': update['reason'],
+                                'confidence': update.get('confidence', 0.5),
+                                'reason': str(update.get('reason', '')),
                                 'tier': tier,
                                 'overridden': False,
                             }
-                            self.store.log(event='model_triage', audit_id=job['id'], session=session,
-                                           issue_id=issue['id'], verdict=update['verdict'],
-                                           confidence=update['confidence'], reason=update['reason'][:300],
-                                           tier=tier)
+                            triage_records.append({'issue_id': issue['id'],
+                                                   'verdict': update['verdict'],
+                                                   'confidence': update.get('confidence'),
+                                                   'reason': str(update.get('reason', ''))[:300]})
+                    if triage_records:
+                        # One batched write: per-issue log calls can hit a
+                        # transient SQLITE_READONLY under WAL lock contention.
+                        self.store.log(event='model_triage', audit_id=job['id'], session=session,
+                                       tier=tier, verdicts=triage_records)
                     if want_triage:
                         # Advisory reorder only: nothing is removed and severity is untouched.
                         penalty = {'likely_true': 0, 'uncertain': 1, 'likely_false': 2}

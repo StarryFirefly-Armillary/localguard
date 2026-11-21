@@ -54,8 +54,23 @@ class Store:
             db.close()
 
     def log(self, **payload):
-        with self.connect() as db:
-            db.execute('INSERT INTO logs(time,payload) VALUES (?,?)', (time.time(), json.dumps(payload, ensure_ascii=False)))
+        # Each log is one independent INSERT, safe to retry. On Windows a WAL
+        # write can transiently report SQLITE_READONLY while the file is
+        # briefly held by an antivirus/indexer; retry instead of failing the
+        # whole audit over a diagnostic record.
+        import time as _time
+        record = json.dumps(payload, ensure_ascii=False)
+        for attempt in range(4):
+            try:
+                with self.connect() as db:
+                    db.execute('INSERT INTO logs(time,payload) VALUES (?,?)', (time.time(), record))
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if attempt < 3 and ('readonly' in message or 'locked' in message or 'busy' in message):
+                    _time.sleep(0.05 * (2 ** attempt))
+                    continue
+                raise
 
     def remember(self, session, path, digest, start, end):
         with self.connect() as db:

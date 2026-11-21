@@ -68,12 +68,26 @@ async def test_triage_schema_and_non_thinking_request(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('item', [
-    triage_item('definitely_true'),
-    triage_item(confidence=2),
-    {**triage_item(), 'invented': 'field'},
+async def test_triage_gate_rejects_unknown_fields(tmp_path, monkeypatch):
+    config = Config(allowed_roots=[tmp_path], data_dir=tmp_path / 'state')
+    model = LocalModel(config, Store(config.data_dir))
+
+    async def infer(*args, **kwargs):
+        bad = {**triage_item(), 'invented': 'field'}
+        return {'choices': [{'message': {'content': json.dumps({'explanations': [bad]})}}]}
+
+    monkeypatch.setattr(model, '_infer', infer)
+    with pytest.raises(ModelUnavailable, match='schema or location'):
+        await model.explain_issues([{'id': 'ISSUE-1', 'source': []}], triage=True)
+    await model.close()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('item,expect_triage,expect_conf', [
+    (triage_item('definitely_true'), False, None),
+    (triage_item(confidence=2), True, None),
 ])
-async def test_triage_gate_rejects_bad_verdicts_and_locations(tmp_path, monkeypatch, item):
+async def test_malformed_triage_is_dropped_not_fatal(tmp_path, monkeypatch, item, expect_triage, expect_conf):
     config = Config(allowed_roots=[tmp_path], data_dir=tmp_path / 'state')
     model = LocalModel(config, Store(config.data_dir))
 
@@ -81,8 +95,9 @@ async def test_triage_gate_rejects_bad_verdicts_and_locations(tmp_path, monkeypa
         return {'choices': [{'message': {'content': json.dumps({'explanations': [item]})}}]}
 
     monkeypatch.setattr(model, '_infer', infer)
-    with pytest.raises(ModelUnavailable, match='schema or location'):
-        await model.explain_issues([{'id': 'ISSUE-1', 'source': []}], triage=True)
+    result = await model.explain_issues([{'id': 'ISSUE-1', 'source': []}], triage=True)
+    assert ('verdict' in result['ISSUE-1']) is expect_triage
+    assert result['ISSUE-1'].get('confidence') == expect_conf
     await model.close()
 
 

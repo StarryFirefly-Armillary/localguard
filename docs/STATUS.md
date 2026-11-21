@@ -97,3 +97,34 @@ GGUF 转换用的是 b12568 工具链（含 `llama-quantize.exe`），与运行�
 实测（8gb CUDA、55 条 fixture 命中）：`coverage.model_triage: completed`，55 条全部标为 `likely_false`，理由如"源文件明确标记为静态测试用占位符…故意放置的测试数据"。这证明模型确实在做真假甄别，而非只润色文字。
 
 测试：`tests/test_discovery_and_triage.py`，全套 352 passed。
+
+## 规则包扩充与 VulnShop 基准验证（2026-11-21 上午）
+
+用户要求"尽可能全备地检查漏洞"并授权决策。决定：**主攻确定性规则覆盖，不让 LLM 裁决、不上数据流引擎**；规则由产品方维护随产品分发，**绝不加载被审仓库自带规则**（供应链风险：恶意仓库可塞规则压制/扭曲发现，或用灾难正则 DoS）。
+
+### 交付
+
+`localguard/rules/security-extended.json`：135 条精选安全规则（纯 ASCII JSON，213KB）。来源为 semgrep/semgrep-rules 官方仓库的 django/flask/lang/sqlalchemy/javascript security 目录 + 人工审核过的 VulnShop 13 个规则文件（无远程 include、无危险构造）。scanners.py 在 security 规则集下自动加载；不覆盖原 security.json，可回退。
+
+### 基准结果（laugiov/code-safety / VulnShop，16 已知漏洞）
+
+| 阶段 | 检出 | 说明 |
+|---|---|---|
+| 扩充前 | 2 | 仅硬编码密钥 + TLS 配置 |
+| 扩充后（产品链路） | **48** | 覆盖 admin_panel 命令注入/路径遍历、api XXE、authentication SQLi、vulnshop 密钥；未截断 |
+| 模型分诊 | 48 全部分诊 | 39 likely_true / 5 uncertain / 4 likely_false |
+
+误报对照：真实前端仓库 chat-demo-main 仍为 0 findings。基准检出率接近仓库自报的 Semgrep 81.25%（11/16），且额外发现基线未覆盖的问题。
+
+### 过程中修复的四个真实 bug
+
+1. 规则 JSON 含非 ASCII 字节 → Windows GBK 解码失败 → 高字节转义为纯 ASCII。
+2. semgrep/grype 结构化输出超 128KB stream cap 被杀 → 分工具提高 stream cap（semgrep 512KB、grype 1MB），后置 MAX_RESULT_BYTES/MAX_FINDINGS 仍兜底。
+3. 分诊时逐条写审计日志触发 WAL 瞬时 SQLITE_READONLY → 改为一次批量写 + log() 有限重试。
+4. 分诊单条 verdict/confidence 非法导致整批降级 → 逐条规范化（非法则丢弃该条 triage），保留 explanation；schema 中 triage 字段改为可选。
+
+### 已知限制（如实标注）
+
+- gosec/cppcheck/pip-audit 离线不可用（无包数据/非对应语言）。
+- grype 现可正常运行（completed），但对目录源产生 ~700 条间接依赖匹配，超过 200KB 结构化上限后被整体省略 → 依赖 CVE 检测当前无有效输出。根因是扫整目录而非仅 manifest；修复需重构扫描目标构造，本轮未做。
+- 污点流类漏洞的完整数据流（IDOR/Mass Assignment 等）仍依赖高质量规则；规则包已覆盖大部分，但没有 CodeQL/Pysa 级语义分析，不宣称全备。

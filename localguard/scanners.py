@@ -758,6 +758,13 @@ async def run_scanner(scanner: str, target: Path, ruleset: str = 'default', *,
                 configs = ['--config', str(RULE_DIR / 'backdoor.json')]
                 if ruleset != 'backdoor':
                     configs += ['--config', str(RULE_DIR / 'security.json')]
+                    # Curated offline rule pack maintained by the product,
+                    # never loaded from the repository under audit (supply-chain
+                    # risk: a hostile repo could ship rules that suppress or
+                    # distort findings).
+                    extended = RULE_DIR / 'security-extended.json'
+                    if extended.is_file():
+                        configs += ['--config', str(extended)]
                 args = ['scan', *configs, '--json', '--oss-only',
                     '--metrics=off', '--disable-version-check', '--disable-nosem',
                     '--no-git-ignore', '--no-rewrite-rule-ids', '--jobs=1',
@@ -780,7 +787,14 @@ async def run_scanner(scanner: str, target: Path, ruleset: str = 'default', *,
                         '--format=json', '--progress-spinner=off']
             else:
                 args = ['dir:' + str(root), '--config', str(RULE_DIR / 'grype.yaml'), '--output', 'json']
-            execution = await _execute([str(binary), *args], root, env, timeout)
+            # Semgrep and grype emit verbose structured JSON (extra metadata
+            # per match). A higher stream cap is safe: both are controlled
+            # offline tools, and _finish() still enforces the tighter
+            # MAX_RESULT_BYTES / MAX_FINDINGS limits on the normalized result.
+            # Grype against a 3 GB advisory DB can produce ~800 KB of matches.
+            stream_cap = 1024 * 1024 if scanner == 'grype' else (512 * 1024 if scanner == 'semgrep' else None)
+            execution = await _execute([str(binary), *args], root, env, timeout,
+                                       max_bytes=stream_cap)
         result['status'], result['truncated'] = execution['status'], result['truncated'] or execution['truncated']
         if execution['status'] != 'completed':
             _warn(result, 'Scanner timed out; its process tree was terminated.' if execution['status'] == 'timeout' else 'Scanner exceeded the combined streaming output limit; its process tree was terminated.')

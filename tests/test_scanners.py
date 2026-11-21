@@ -134,6 +134,10 @@ class AdapterMockTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('auto', argv)
         self.assertTrue(any('bundled offline rules' in w for w in result['warnings']))
         self.assertIn(str(s.RULE_DIR / 'security.json'), argv)
+        # Curated extended rule pack is always loaded; repository-supplied
+        # rules are never used (supply-chain risk).
+        self.assertIn(str(s.RULE_DIR / 'security-extended.json'), argv)
+        self.assertNotIn('analysis/semgrep', ' '.join(argv))
         self.assertIn('--oss-only', argv)
 
     async def test_mock_gitleaks_secret_and_config_isolation(self):
@@ -311,7 +315,7 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / 'requirements.txt').write_text('# comment\nFlask==2.0.0\n-r evil.txt\n-e .\nname @ https://example.invalid\n', encoding='utf-8')
-            async def inspect_argv(argv, cwd, env, timeout):
+            async def inspect_argv(argv, cwd, env, timeout, **kwargs):
                 content = Path(argv[argv.index('--requirement') + 1]).read_text()
                 self.assertEqual(content, 'flask==2.0.0\n')
                 return execution({'dependencies': []})
