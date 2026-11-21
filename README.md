@@ -148,3 +148,14 @@ python scripts/build_offline_bundle.py --no-download   # 生成离线 bundle
 ## 许可
 
 本项目采用 [MIT License](LICENSE)。随项目分发的第三方规则包来源与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)（`security-extended.json` 中的规则来自 MIT 许可的 VulnShop 基准；Semgrep 官方规则因其许可禁止再分发，未纳入分发包）。
+
+## 扩展规则包
+
+Semgrep 扫描器每次运行会加载 `localguard/rules/` 下的 `security.json`、`backdoor.json` 和 `security-extended.json`。三者都是**标准 Semgrep 规则格式**（JSON，结构为 `{"rules": [...]}`），你可以在本地编辑它们来增减规则——例如把 `security-extended.json` 替换为你自己整理或已获授权的规则集。改动是本地行为，不需要改代码；重启 UI 服务即可生效。
+
+添加规则前请注意：
+
+- **只加载你有权使用的规则**。规则来源的许可由你负责。特别提醒：Semgrep 官方 `semgrep/semgrep-rules` 仓库的规则采用 [Semgrep Rules License v1.0](https://semgrep.dev/legal/rules-license)，明确限定"仅内部业务使用"、禁止再分发和作为服务提供，因此本项目不随包分发它们，也不建议你把它们提交进公开仓库。如果你在内部环境使用并自行承担相应许可判断，那是你自己的决定。
+- **规则 id 建议加自己的前缀**，避免与内置规则冲突。
+- **规则包不是越多越好**：过多的宽泛规则会放大噪声并被后续的数量/体积上限截断。改完建议用你熟悉的仓库跑一次，确认检出与误报都可接受。
+- 本项目**不会**自动加载被审查仓库自带的规则文件——恶意仓库可以塞入规则来压制或扭曲扫描结果，这是刻意保留的安全边界。
