@@ -35,21 +35,24 @@
       <div class="shared-fields">
         <label class="field-label" for="target">目标仓库 / 本地目录 <span class="required-mark">*</span></label>
         <input id="target" name="target" form="audit-form" type="text" placeholder="C:\Projects\your-repository" autocomplete="off" spellcheck="false" required maxlength="4096" aria-describedby="target-help">
-        <label class="field-label" for="model-tier">模型档位 <span class="label-note">按资源选择</span></label>
-        <select id="model-tier" name="model_tier" form="audit-form" aria-describedby="model-help">
-          <option value="rules">规则模式 · 不加载模型</option>
-          <option value="4gb">4 GB · 轻量路由与解释</option>
-          <option value="8gb">8 GB · 4B Q4 模型</option>
-        </select>
-        <p id="model-help" class="field-help">模型只做编排与解释，不生成问题定位。</p>
-        <label class="field-label" for="exclude-paths">排除路径 <span class="label-note">逗号分隔，可选</span></label>
-        <input id="exclude-paths" name="exclude_paths" form="audit-form" type="text" placeholder="额外排除的目录，逗号分隔" autocomplete="off" spellcheck="false" maxlength="2000">
-        <label class="check-row"><input id="auto-exclude" type="checkbox" checked><span>智能排除测试与生成目录</span></label>
-        <label class="check-row"><input id="model-triage" type="checkbox" checked><span>模型分诊（标记疑似误报）</span></label>
       </div>
 
       <section id="form-panel" role="tabpanel" aria-labelledby="form-tab">
         <form id="audit-form">
+          <details id="advanced-options" class="advanced-options">
+            <summary>高级设置 <span class="summary-note">模型 · 扫描器 · 排除项</span></summary>
+            <div class="advanced-body">
+              <label class="field-label" for="model-tier">模型档位</label>
+              <select id="model-tier" name="model_tier" form="audit-form">
+                <option value="rules">规则模式 · 不加载模型</option>
+                <option value="4gb">4 GB · 轻量路由与解释</option>
+                <option value="8gb">8 GB · 4B Q4 模型</option>
+              </select>
+              <p id="model-help" class="field-help">模型只做编排与解释，不生成问题定位。</p>
+              <label class="field-label" for="exclude-paths">排除路径 <span class="label-note">逗号分隔</span></label>
+              <input id="exclude-paths" name="exclude_paths" form="audit-form" type="text" placeholder="额外排除的目录，逗号分隔" autocomplete="off" spellcheck="false" maxlength="2000">
+              <label class="check-row"><input id="auto-exclude" type="checkbox" checked><span>智能排除测试与生成目录</span></label>
+              <label class="check-row"><input id="model-triage" type="checkbox" checked><span>模型分诊（标记疑似误报）</span></label>
           <fieldset class="plain-fieldset">
             <legend class="field-label">审查深度</legend>
             <div class="depth-options">
@@ -78,6 +81,8 @@
               <label for="head">Head<input id="head" type="text" value="HEAD" maxlength="200" autocomplete="off" spellcheck="false" disabled></label>
             </div>
           </div>
+            </div>
+          </details>
           <div id="submit-alert" class="inline-alert" role="alert" hidden></div>
           <button id="start-audit" class="button primary full-width" type="submit" disabled><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m7 4 8 6-8 6V4Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span id="start-audit-label">连接服务中…</span></button>
         </form>
@@ -118,17 +123,20 @@
         <div class="export-controls"><label class="visually-hidden" for="export-format">报告导出格式</label><select id="export-format"><option value="json">JSON</option><option value="markdown">Markdown</option><option value="sarif">SARIF</option></select><button id="export-report" class="button secondary" type="button" disabled><svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3v9m-3-3 3 3 3-3M4 13v4h12v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>导出报告</button></div>
       </div>
       <div id="export-alert" class="inline-alert" role="alert" hidden></div>
-      <section class="summary-grid" aria-label="审查结果摘要">
-        <div class="summary-card"><span class="summary-label">发现问题</span><strong id="stat-total">—</strong><small id="stat-total-note">等待审查</small></div>
-        <div class="summary-card"><span class="summary-label"><span class="severity-dot high" aria-hidden="true"></span>高风险 / 严重</span><strong id="stat-high">—</strong><small>优先人工复核</small></div>
-        <div class="summary-card"><span class="summary-label">待复核</span><strong id="stat-unreviewed">—</strong><small id="stat-review-note">尚无审查结果</small></div>
-        <div class="summary-card"><span class="summary-label">完成模块</span><strong id="stat-modules">—</strong><small>完成不代表无风险</small></div>
+      <section class="status-strip" aria-label="审查状态摘要">
+        <div class="status-head"><span id="activity-indicator" class="activity-indicator" aria-hidden="true"></span><strong id="activity-title">等待开始审查</strong><span id="audit-status" class="badge neutral">未开始</span><span id="audit-id" class="audit-id mono"></span></div>
+        <div class="status-stats">
+          <span><small>问题</small><strong id="stat-total">—</strong></span>
+          <span><small>高危</small><strong id="stat-high">—</strong></span>
+          <span><small>待复核</small><strong id="stat-unreviewed">—</strong></span>
+          <span><small>模块</small><strong id="stat-modules">—</strong></span>
+        </div>
+        <div class="status-progress"><progress id="audit-progress" max="100" value="0" aria-label="审查进度"></progress><span id="progress-label">—</span></div>
+        <span id="stat-total-note" class="visually-hidden">等待审查</span><span id="stat-review-note" class="visually-hidden">尚无审查结果</span>
       </section>
 
       <section class="panel activity-panel" aria-labelledby="activity-title">
-        <div class="panel-heading"><div class="title-with-indicator"><span id="activity-indicator" class="activity-indicator" aria-hidden="true"></span><h3 id="activity-title">等待开始审查</h3><span id="audit-status" class="badge neutral">未开始</span></div><span id="audit-id" class="audit-id mono"></span></div>
         <p id="audit-target" class="audit-target mono">选择目标目录，建立第一条证据链。</p>
-        <div class="progress-row"><progress id="audit-progress" max="100" value="0" aria-label="审查进度"></progress><span id="progress-label">—</span></div>
         <div class="activity-footer"><ol class="pipeline" aria-label="审查流程"><li id="pipeline-queue">任务排队</li><li id="pipeline-scan">确定性扫描</li><li id="pipeline-report">证据报告</li></ol><span id="queue-label" class="muted">就绪后从左侧发起</span></div>
         <div id="completed-modules" class="module-list" aria-label="已完成的扫描模块" hidden></div>
         <div id="poll-alert" class="inline-alert" role="alert" hidden></div>
