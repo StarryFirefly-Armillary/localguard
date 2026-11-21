@@ -47,6 +47,7 @@ STATUS = obj({
     'issues': array(ISSUE), 'warnings': array(string()), 'target': string(), 'root': string(),
     'error': string(), 'truncated': BOOL, 'total_issues': integer(), 'next_offset': integer(),
     'coverage': obj({}, extra=True), 'model_tier': string(),
+    'warning_explanations': obj({}, extra=True),
 }, ['audit_id', 'status', 'queue_position', 'progress', 'completed_modules', 'issues', 'warnings', 'truncated'])
 
 

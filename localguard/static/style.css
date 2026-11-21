@@ -182,6 +182,11 @@ progress::-moz-progress-bar { background: var(--accent); }
 .coverage-panel { background: var(--amber-bg); border-radius: 8px; padding: 11px 14px; margin-top: 13px; color: #7a5a1e; font-size: 11px; }
 .coverage-panel h4 { font-size: 12px; color: var(--amber); }
 .coverage-panel ul { margin: 6px 0; padding-left: 17px; }
+.coverage-item { margin-bottom: 5px; }
+.coverage-zh { line-height: 1.5; }
+.coverage-raw { margin-top: 2px; }
+.coverage-raw summary { cursor: pointer; color: var(--muted); font-size: 10px; }
+.coverage-raw .mono { display: block; white-space: pre-wrap; word-break: break-word; font-size: 10px; color: var(--muted); margin-top: 3px; max-height: 90px; overflow: auto; }
 .coverage-panel li { margin-bottom: 3px; overflow-wrap: anywhere; }
 .coverage-panel p { color: #8a6b33; font-size: 10px; }
 .review-grid { display: grid; grid-template-columns: minmax(300px, .92fr) minmax(0, 1.18fr); gap: 18px; align-items: start; }

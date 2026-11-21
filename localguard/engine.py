@@ -336,6 +336,22 @@ class AuditEngine:
                     message = 'Model files could not be accessed' if isinstance(exc, OSError) else str(exc)
                     result['warnings'].append('Local model explanation unavailable; deterministic findings retained. ' + message[:600])
             result['warnings'] = list(dict.fromkeys(result['warnings']))
+            # Chinese explanations for coverage warnings are presentation-only.
+            # A model tier must be active; in rules mode the verbatim warnings
+            # remain unchanged. Any failure is advisory and never fails the audit.
+            if result['warnings'] and tier in ('4gb', '8gb') and (tier != '4gb' or self.config.model_4gb_path):
+                try:
+                    model = self.registry.get_model()
+                    translations = await model.explain_warnings(result['warnings'], tier)
+                    result['warning_explanations'] = {
+                        result['warnings'][int(wid[1:])]: explanation
+                        for wid, explanation in translations.items()
+                        if wid.startswith('W') and wid[1:].isdigit()
+                        and 0 <= int(wid[1:]) < len(result['warnings'])
+                    }
+                except (ValueError, OSError, RuntimeError) as exc:
+                    self.store.log(event='warning_explanation_failed', audit_id=job['id'],
+                                   session=session, reason=str(exc)[:300], tier=tier)
             result['completed_modules'].append('locations_validation')
             result.update(status='completed',progress=100)
         except asyncio.CancelledError:

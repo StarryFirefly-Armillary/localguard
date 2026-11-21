@@ -115,3 +115,52 @@ async def test_triage_reason_location_is_sanitized_not_fatal(tmp_path, monkeypat
     assert result['ISSUE-1']['verdict'] == 'likely_true'
     assert '47' not in result['ISSUE-1']['reason']
     await model.close()
+
+
+@pytest.mark.anyio
+async def test_explain_warnings_maps_every_warning(tmp_path, monkeypatch):
+    config = Config(allowed_roots=[tmp_path], data_dir=tmp_path / 'state')
+    model = LocalModel(config, Store(config.data_dir))
+
+    async def infer(messages, tools, tier, **kwargs):
+        payload = json.loads(messages[1]['content'])
+        ids = [w['id'] for w in payload['warnings']]
+        return {'choices': [{'message': {'content': json.dumps({
+            'explanations': [{'id': wid, 'explanation': f'中文解释 {i+1}'}
+                             for i, wid in enumerate(ids)]})}}]}
+
+    monkeypatch.setattr(model, '_infer', infer)
+    warnings = ['semgrep: coverage is not exhaustive', 'gosec: error; unavailable']
+    result = await model.explain_warnings(warnings, tier='8gb')
+    assert result == {'W000': '中文解释 1', 'W001': '中文解释 2'}
+    assert await model.explain_warnings([], tier='8gb') == {}
+    await model.close()
+
+
+@pytest.mark.anyio
+async def test_explain_warnings_tolerates_id_mismatch(tmp_path, monkeypatch):
+    config = Config(allowed_roots=[tmp_path], data_dir=tmp_path / 'state')
+    model = LocalModel(config, Store(config.data_dir))
+
+    async def infer(*args, **kwargs):
+        return {'choices': [{'message': {'content': json.dumps({
+            'explanations': [{'id': 'W999', 'explanation': '按顺序兜底'}]})}}]}
+
+    monkeypatch.setattr(model, '_infer', infer)
+    result = await model.explain_warnings(['some warning'], tier='8gb')
+    assert result == {'W000': '按顺序兜底'}
+    await model.close()
+
+
+@pytest.mark.anyio
+async def test_explain_warnings_rejects_wrong_count(tmp_path, monkeypatch):
+    config = Config(allowed_roots=[tmp_path], data_dir=tmp_path / 'state')
+    model = LocalModel(config, Store(config.data_dir))
+
+    async def infer(*args, **kwargs):
+        return {'choices': [{'message': {'content': json.dumps({'explanations': []})}}]}
+
+    monkeypatch.setattr(model, '_infer', infer)
+    with pytest.raises(ValueError, match='count'):
+        await model.explain_warnings(['a', 'b'], tier='8gb')
+    await model.close()

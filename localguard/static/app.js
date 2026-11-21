@@ -470,7 +470,20 @@
     else if (returned) warnings.push(readable(returned));
     if (state.audit?.truncated) warnings.push('服务端已截断结果。当前列表可能不完整，请结合导出报告与本地日志复核。');
     $('coverage-panel').hidden = !warnings.length;
-    $('coverage-warnings').replaceChildren(...[...new Set(warnings)].map((warning) => node('li', '', warning)));
+    const explanations = state.audit?.warning_explanations || {};
+    $('coverage-warnings').replaceChildren(...[...new Set(warnings)].map((warning) => {
+      const li = node('li', 'coverage-item');
+      const zh = explanations[warning];
+      if (zh && zh !== warning) {
+        li.append(node('span', 'coverage-zh', text(zh)));
+        const details = node('details', 'coverage-raw');
+        details.append(node('summary', '', '查看原文'), node('span', 'mono', text(warning)));
+        li.append(details);
+      } else {
+        li.append(node('span', '', text(warning)));
+      }
+      return li;
+    }));
   }
 
   function locationsOf(issue) { return Array.isArray(issue.locations) ? issue.locations.filter((location) => location && typeof location === 'object') : []; }
