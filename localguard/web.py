@@ -116,6 +116,12 @@ def create_app(config: Config | None = None):
         registry.store.review(data['audit_id'],session(request),data['issue_id'],data['decision'])
         return {'ok':True}
 
+    @app.get('/api/feedback-stats')
+    async def feedback_stats(request: Request):
+        # Advisory quality metrics from past human reviews. No findings are
+        # suppressed by these numbers; they only inform the user.
+        return registry.store.triage_accuracy()
+
     @app.get('/api/audits/{audit_id}/export')
     async def export(audit_id: str, request: Request, format: str='json'):
         sid = session(request)

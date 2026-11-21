@@ -69,3 +69,4 @@ llama-b*-bin-win-*.zip
 
 # ---- Local checkouts cloned for auditing ----
 repos/
+benchmarks/last-run.json

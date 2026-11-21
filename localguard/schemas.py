@@ -37,7 +37,9 @@ ISSUE = obj({
     'triage': obj({'verdict': string(enum=['likely_true', 'likely_false', 'uncertain']),
                    'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
                    'reason': string(), 'tier': string(), 'overridden': BOOL},
-                  ['verdict', 'confidence', 'reason', 'tier'])
+                  ['verdict', 'confidence', 'reason', 'tier']),
+    'feedback': obj({'rule_confirmed': integer(), 'rule_false_positive': integer()},
+                    ['rule_confirmed', 'rule_false_positive'])
 }, ['id', 'title', 'severity', 'category', 'cwe', 'confidence', 'locations', 'evidence', 'explanation', 'remediation', 'needs_human_review'])
 STATUS = obj({
     'audit_id': ID, 'status': string(enum=['queued', 'running', 'completed', 'failed']),

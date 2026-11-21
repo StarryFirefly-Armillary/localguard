@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+      - name: Unit tests
+        run: python -m pytest -q
+
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check bundled rules provenance
+        run: python scripts/check_licenses.py
+
+  benchmark:
+    # Full benchmark needs scanner binaries + a ~3 GB local Grype DB.
+    # Manual only: run via Actions tab when changing rules or the pipeline.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Clone benchmark app
+        run: git clone --depth 1 https://github.com/laugiov/code-safety.git repos/code-safety
+      - name: Install offline scanners
+        run: python scripts/install_scanners.py --help  # documented entry point; CI env must provision binaries
+      - name: Run detection benchmark
+        run: python scripts/bench_detection.py --json benchmarks/last-run.json
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-result
+          path: benchmarks/last-run.json

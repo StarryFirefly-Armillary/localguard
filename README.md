@@ -136,8 +136,12 @@ view_file(path=<abs>, start_line, end_line)   # 深链/证据核对
 
 ```bash
 pytest -q                                   # 全套测试
+python scripts/check_licenses.py            # 规则包许可检查
+python scripts/bench_detection.py --config localguard.local.json --json benchmarks/last-run.json  # 检出率基准
 python scripts/build_offline_bundle.py --no-download   # 生成离线 bundle
 ```
+
+检出率基准对照 VulnShop 的 16 个已知漏洞（详见 [benchmarks/README.md](benchmarks/README.md)），改动规则或审查流程后可以跑它确认没有退化。CI 在 push/PR 时跑测试与许可检查；完整基准需扫描器二进制和本地漏洞库，在 Actions 里手动触发。
 
 离线 bundle 包含应用 wheel、应用/扫描器 wheels、扫描器二进制与 Grype DB，供无网络设备安装。仓库不提交虚拟环境、扫描器二进制、模型/数据库等大文件（见 `.gitignore`）。
 

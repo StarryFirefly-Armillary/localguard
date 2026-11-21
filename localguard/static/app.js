@@ -216,6 +216,14 @@
       state.bootstrapped = true;
       setConnection(true);
       alertIn('connection-alert', '');
+      // Advisory: model triage agreement with past human reviews.
+      fetch('/api/feedback-stats').then((r) => r.ok ? r.json() : null).then((stats) => {
+        const el = $('triage-accuracy');
+        if (stats && typeof stats.accuracy === 'number' && stats.decided > 0) {
+          el.textContent = `分诊一致率 ${stats.accuracy}% (${stats.decided} 项复核)`;
+          el.hidden = false;
+        }
+      }).catch(() => {});
       renderCoverage();
       if (isActive()) schedulePoll(0);
       announce('本地服务已连接，可以开始审查。');
@@ -540,6 +548,13 @@
                          (labels[triage.verdict] || '模型分诊') + (triage.overridden ? ' · 已人工推翻' : ''));
       badge.title = text(triage.reason, '');
       top.append(badge);
+    }
+    const feedback = issue.feedback;
+    if (feedback && (feedback.rule_confirmed || feedback.rule_false_positive)) {
+      const fb = node('span', 'badge feedback-badge',
+                      `历史复核：确认 ${feedback.rule_confirmed} · 误报 ${feedback.rule_false_positive}`);
+      fb.title = '基于同一规则的过往人工复核，仅供参考，不自动判定';
+      top.append(fb);
     }
     if (typeof issue.confidence === 'number' && Number.isFinite(issue.confidence)) top.append(node('span', 'issue-confidence', `置信度 ${Math.round(Math.max(0, Math.min(1, issue.confidence)) * 100)}%`));
     card.append(top, node('h4', '', text(issue.title, '未命名问题')), node('p', 'issue-id mono', [id, text(issue.cwe)].filter(Boolean).join(' / ')));

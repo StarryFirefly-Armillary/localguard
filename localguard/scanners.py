@@ -691,6 +691,16 @@ def _normalize(scanner: str, root: Path, raw, result: dict, pins: dict) -> None:
                     category='dependency_cve', confidence=0.95,
                     explanation=vulnerability.get('description') or 'Grype database matched this package version; review applicability.',
                     remediation='Review advisory and upgrade to a compatible fixed version: ' + ', '.join(vulnerability.get('fix', {}).get('versions', [])))
+        # Grype advisories carry lengthy descriptions/URLs per match. The full
+        # payload is hundreds of KB and would push _finish() to drop every
+        # finding. Keep a compact index keyed by the same raw_ref used above;
+        # finding explanations already hold the human-readable advisory text.
+        raw['matches'] = [{
+            'artifact': {'name': (m.get('artifact') or {}).get('name', ''),
+                         'version': (m.get('artifact') or {}).get('version', '')},
+            'vulnerability': {'id': (m.get('vulnerability') or {}).get('id', ''),
+                              'severity': (m.get('vulnerability') or {}).get('severity', '')},
+        } for m in raw.get('matches', [])]
 
 
 async def run_scanner(scanner: str, target: Path, ruleset: str = 'default', *,

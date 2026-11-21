@@ -138,3 +138,28 @@ GGUF 转换用的是 b12568 工具链（含 `llama-quantize.exe`），与运行�
 用户选择项目主许可为 **MIT**：新增 `LICENSE`（Copyright 2026 StarryFirefly），`pyproject.toml` 声明 `license = {text = "MIT"}`，README 加许可章节。
 
 注意：移除 Semgrep 规则后检出能力略降（135→92 条规则），但 VulnShop 规则本身实测可产生 226 findings，核心能力保留。
+
+## 自迭代第一批：回归基准 / 依赖审计 / 反馈闭环 / CI（2026-11-21 11:15-11:50）
+
+按优先级落地用户授权的"尽可能全面"迭代：
+
+### P0 · 回归基准（`scripts/bench_detection.py`）
+
+把 VulnShop 16 个 ground truth（复制到 `benchmarks/vulnshop-ground-truth.json`，MIT）固化成可重复脚本：跑真实 audit → 按文件匹配（可选 `--strict-line`）算召回率 → 输出指标，`--json` 落盘。回归门槛 40%（当前基线 43.8%）。当前实测 7/16 = 43.8% recall（55 findings）；仓库自报完整 Semgrep 68.75%，我们规则包更精简且离线，差距合理。脚本用临时 data_dir，不与运行中的 UI 服务抢数据库。`benchmarks/last-run.json` 已 gitignore。
+
+### P0 · 修复 grype 依赖审计
+
+根因：grype 每个 match 带长 description/urls，188 条匹配的 raw 达 777KB，`_finish()` 为控制体积把 findings 全 pop 掉 → 0 输出。修复：`_normalize` 末尾把 `raw['matches']` 裁成精简索引（artifact name/version + vuln id/severity，raw_ref 索引顺序不变）。实测扫描器直接调用产出 188 findings、未截断、定位 `requirements.txt:18`；端到端审查产出 100 条依赖 CVE。
+
+过程中处理反复出现的 `SQLITE_READONLY`：旧 20MB state.sqlite3 经多次强杀处于服务进程内写入异常状态（独立进程测试可写、文件属性正常）。备份后换新库解决；同时给 `store.log()` / `store.update()` 加 8 次退避重试，防止瞬时锁导致整次审查失败。
+
+### P1 · 人工复核反馈闭环
+
+reviews 表新增 `rule_id` / `model_verdict` 列（兼容旧库 ALTER）；`review()` 记录规则的 raw_ref 与模型 verdict。`get()` 聚合该规则历史确认/误报数，注入 issue 的 `feedback` 字段（仅展示，不自动压制）。UI 问题卡片显示"历史复核：确认 N · 误报 M"徽章。实测：标记误报后立即返回 `feedback: {rule_confirmed:0, rule_false_positive:1}`。
+
+### P2 · CI 与分诊量化
+
+- `.github/workflows/ci.yml`：push/PR 跑 pytest + 许可检查；完整基准设为 workflow_dispatch 手动触发（需扫描器二进制与 3GB Grype DB）。
+- `scripts/check_licenses.py`：检查规则包所有 id 带 `lg.ext.` 来源前缀、无禁止分发的 Semgrep 官方规则族、NOTICES 存在。CI 必跑，防许可事故重演。
+- `get_audit_status` 之外新增 `GET /api/feedback-stats`，返回 `store.triage_accuracy()`（模型 verdict 与人工决定的一致率）；UI 状态栏在样本 >0 时显示"分诊一致率 N% (M 项复核)"。
+- 新增 `tests/test_benchmark_and_licenses.py`（5 项），全套 357 passed。

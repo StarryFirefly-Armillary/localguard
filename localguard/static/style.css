@@ -219,6 +219,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 .badge.triage-likely_false { color: var(--green); background: var(--green-bg); }
 .badge.triage-uncertain { color: var(--amber); background: var(--amber-bg); }
 .badge.triage-overridden { text-decoration: line-through; opacity: .7; }
+.badge.feedback-badge { color: var(--muted); background: var(--panel-raised); font-weight: 400; }
 .issue-category, .issue-confidence { color: var(--subtle); font-size: 10px; }
 .issue-confidence { margin-left: auto; }
 .issue-card h4 { font-size: 13px; line-height: 1.6; font-weight: 500; overflow-wrap: anywhere; }
