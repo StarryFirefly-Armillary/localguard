@@ -144,3 +144,7 @@ python scripts/build_offline_bundle.py --no-download   # 生成离线 bundle
 ## 说明
 
 本仓库仅包含源码、测试、脚本与静态测试样本；虚拟环境、扫描器二进制、模型文件、扫描数据库等运行产物未纳入版本控制，需按上述步骤在本地准备。
+
+## 许可
+
+本项目采用 [MIT License](LICENSE)。随项目分发的第三方规则包来源与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)（`security-extended.json` 中的规则来自 MIT 许可的 VulnShop 基准；Semgrep 官方规则因其许可禁止再分发，未纳入分发包）。

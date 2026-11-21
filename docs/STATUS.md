@@ -128,3 +128,13 @@ GGUF 转换用的是 b12568 工具链（含 `llama-quantize.exe`），与运行�
 - gosec/cppcheck/pip-audit 离线不可用（无包数据/非对应语言）。
 - grype 现可正常运行（completed），但对目录源产生 ~700 条间接依赖匹配，超过 200KB 结构化上限后被整体省略 → 依赖 CVE 检测当前无有效输出。根因是扫整目录而非仅 manifest；修复需重构扫描目标构造，本轮未做。
 - 污点流类漏洞的完整数据流（IDOR/Mass Assignment 等）仍依赖高质量规则；规则包已覆盖大部分，但没有 CodeQL/Pysa 级语义分析，不宣称全备。
+
+## 许可合规修正（2026-11-21 上午）
+
+在添加项目 license 时发现：`security-extended.json` 初版（135 条）包含的 Semgrep 官方规则受 **Semgrep Rules License v1.0** 约束，该许可明确限定"仅内部业务使用、禁止再分发、禁止作为服务提供"，不能随开源项目分发。此前已推送到公开仓库，属合规疏漏（当时只审查了供应链安全，未审查再分发权）。
+
+修正：规则包重建为**仅 92 条 MIT 许可的 VulnShop 规则**（来源 `laugiov/code-safety`，MIT），Semgrep 官方规则全部剔除。规则 id 加 `lg.ext.` 前缀避免冲突，其余逻辑未改。新增 `THIRD_PARTY_NOTICES.md` 记录来源、MIT 全文与修改声明，并明确说明 Semgrep 规则未纳入分发。
+
+用户选择项目主许可为 **MIT**：新增 `LICENSE`（Copyright 2026 StarryFirefly），`pyproject.toml` 声明 `license = {text = "MIT"}`，README 加许可章节。
+
+注意：移除 Semgrep 规则后检出能力略降（135→92 条规则），但 VulnShop 规则本身实测可产生 226 findings，核心能力保留。
