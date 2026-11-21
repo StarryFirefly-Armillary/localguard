@@ -44,4 +44,4 @@ redistribution. They are not part of this distribution.
 Users may add their own rules to `localguard/rules/security-extended.json` locally.
 The license compliance of any rules added in this way is the user's responsibility.
 In particular, Semgrep Rules License v1.0 rules should not be committed to or
-redistributed with a public repository. See the README section "扩展规则包".
+redistributed with a public repository.
