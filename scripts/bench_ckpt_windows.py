@@ -14,7 +14,9 @@ import transformers
 from peft import LoraConfig, get_peft_model
 from transformers import BitsAndBytesConfig
 
-BASE = r'E:\LocalAI\LocalGuard\base-model'
+# Local training paths are machine-specific: set LG_BASE_MODEL to your own
+# checkout. The default is a relative placeholder, never a personal path.
+BASE = os.environ.get('LG_BASE_MODEL', 'models/base-model')
 
 
 def main():
