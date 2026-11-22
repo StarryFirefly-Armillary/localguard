@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import json
 from pathlib import Path
 import uuid
@@ -25,8 +26,10 @@ from localguard.training import validate_record
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / 'fixtures' / 'clean'
 CURATION = ROOT / '.localguard' / 'curation'
-HELDOUT = Path(r'E:\LocalAI\LocalGuard\data\heldout.jsonl')
-TRAIN = Path(r'E:\LocalAI\LocalGuard\data\train.jsonl')
+# Machine-specific data paths come from the environment; defaults are relative.
+_DATA_ROOT = Path(os.environ.get('LG_TRAIN_DATA_DIR', 'data'))
+HELDOUT = _DATA_ROOT / 'heldout.jsonl'
+TRAIN = _DATA_ROOT / 'train.jsonl'
 
 
 def rows(path):
