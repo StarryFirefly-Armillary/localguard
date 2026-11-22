@@ -33,7 +33,13 @@ ISSUE = obj({
     'cwe': string(), 'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
     'locations': {**array(LOCATION), 'minItems': 1}, 'evidence': {**array(EVIDENCE), 'minItems': 1},
     'explanation': string(), 'remediation': string(), 'needs_human_review': BOOL,
-    'review': string(enum=['unreviewed', 'confirmed', 'false_positive'])
+    'review': string(enum=['unreviewed', 'confirmed', 'false_positive']),
+    'triage': obj({'verdict': string(enum=['likely_true', 'likely_false', 'uncertain']),
+                   'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
+                   'reason': string(), 'tier': string(), 'overridden': BOOL},
+                  ['verdict', 'confidence', 'reason', 'tier']),
+    'feedback': obj({'rule_confirmed': integer(), 'rule_false_positive': integer()},
+                    ['rule_confirmed', 'rule_false_positive'])
 }, ['id', 'title', 'severity', 'category', 'cwe', 'confidence', 'locations', 'evidence', 'explanation', 'remediation', 'needs_human_review'])
 STATUS = obj({
     'audit_id': ID, 'status': string(enum=['queued', 'running', 'completed', 'failed']),
@@ -41,6 +47,10 @@ STATUS = obj({
     'issues': array(ISSUE), 'warnings': array(string()), 'target': string(), 'root': string(),
     'error': string(), 'truncated': BOOL, 'total_issues': integer(), 'next_offset': integer(),
     'coverage': obj({}, extra=True), 'model_tier': string(),
+    'warning_explanations': obj({}, extra=True), 'cache_hits': array(string()),
+    'baseline': obj({'baseline_audit_id': string(), 'added': array(string()),
+                     'resolved': array(string()), 'persisted': integer()},
+                    ['baseline_audit_id', 'added', 'resolved', 'persisted']),
 }, ['audit_id', 'status', 'queue_position', 'progress', 'completed_modules', 'issues', 'warnings', 'truncated'])
 
 
@@ -74,13 +84,20 @@ TOOLS = {
              'base_commit':string(pattern=r'^(?:[a-f0-9]{40}|[a-f0-9]{64})$'),'head_commit':string(pattern=r'^(?:[a-f0-9]{40}|[a-f0-9]{64})$'),
              'truncated':BOOL},['diff','changes','base_commit','head_commit','truncated'])),
     'audit_repository': tool(
-        'Queue an asynchronous security audit; immediately returns audit_id/status=queued and an empty issues array. Example target=C:/work,depth=standard,scanners=[patterns,semgrep],include_dependencies=true. Absolute allowlisted paths or allowlisted HTTPS Git URLs only (Git retrieval disabled in offline mode). Poll get_audit_status for validated issues, progress, coverage and queue_position. Form pipeline is deterministic; conversational selection uses local tools only. Unavailable scanners are reported, never hidden. No repository code is executed. resource_estimate optionally supplies scheduling hints, not permission to exceed host limits.',
+        'Queue an asynchronous security audit; immediately returns audit_id/status=queued and an empty issues array. Example target=C:/work,depth=standard,scanners=[patterns,semgrep],include_dependencies=true. Absolute allowlisted paths or allowlisted HTTPS Git URLs only (Git retrieval disabled in offline mode). Poll get_audit_status for validated issues, progress, coverage and queue_position. Form pipeline is deterministic; conversational selection uses local tools only. Unavailable scanners are reported, never hidden. No repository code is executed. auto_exclude defaults true and skips conventional test/fixture/generated directories, self-declared inert fixtures and non-source artifacts across ecosystems (reasons reported in warnings); set false to review everything. exclude_paths additionally skips matching relative directories/files; additive to .gitignore. model_triage defaults true: when a local model tier is active, the model additionally labels each finding likely_true/likely_false/uncertain with a reason for advisory reordering; it never removes findings or changes severity, humans can override, every verdict is logged. resource_estimate optionally supplies scheduling hints, not permission to exceed host limits.',
         obj({'target':TARGET,'depth':string(enum=['quick','standard','deep']),'scanners':{**array(string(enum=SCANNERS),7),'uniqueItems':True,'minItems':1},'include_dependencies':BOOL,'incremental':BOOL,
              'base':string(pattern=r'^[A-Za-z0-9][A-Za-z0-9_./~^+-]{0,159}$'),'head':string(pattern=r'^[A-Za-z0-9][A-Za-z0-9_./~^+-]{0,159}$'),
-             'model_tier':string(enum=['rules','4gb','8gb']),'resource_estimate':obj({'ram_mb':integer(0,32768),'vram_mb':integer(0,8192)},[])},['target']),deepcopy(STATUS)),
+             'model_tier':string(enum=['rules','4gb','8gb']),
+             'exclude_paths':{**array(string(minLength=1,maxLength=300,pattern=r'^[A-Za-z0-9_*?./\\-]+$'),100),'uniqueItems':True},
+             'auto_exclude':BOOL,'model_triage':BOOL,
+             'resource_estimate':obj({'ram_mb':integer(0,32768),'vram_mb':integer(0,8192)},[])},['target']),deepcopy(STATUS)),
     'get_audit_status': tool(
         'Poll an audit owned by this client session. Example audit_id=32-character lowercase hex returned by audit_repository,wait_seconds=2,offset=0,limit=100. Returns status, queue_position, 0..100 progress, completed modules, coverage warnings and validated issues identical to the UI protocol. wait_seconds is bounded 0..30. Large reports are paginated; truncated=true and next_offset indicate remaining issues. Stale locations are flagged if the source changed since evidence was read.',
         obj({'audit_id':ID,'wait_seconds':integer(0,30),'offset':integer(),'limit':integer(1,200)},['audit_id']),deepcopy(STATUS)),
+    'clone_repository': tool(
+        'Explicitly fetch an allowlisted HTTPS Git repository into a private local directory for auditing. Example url=https://github.com/org/repo. This is the ONLY network action and must be user-confirmed; the audit itself stays offline. Accepts only HTTPS, a configured git_hosts hostname, no embedded credentials/query/port/path traversal. Uses --depth 2, no submodules, no hooks, no external diff/conv drivers. Returns a local absolute path to pass to audit_repository; the path is added to this worker allowlist. Cloning is disabled when no Git binary is configured.',
+        obj({'url':string(minLength=1,maxLength=1000,pattern=r'^https://[a-zA-Z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$')},['url']),
+        obj({'path':PATH,'url':string(),'cloned':BOOL},['path','url','cloned'])),
     'analyze_image': tool(
         'Optional local vision assistance for an architecture diagram or terminal screenshot. Example image_path=C:/work/diagram.png,question=Summarize trust boundaries. Returns an untrusted auxiliary description, never security issues or verified code locations. Requires configured local multimodal Qwen model/projector and sufficient memory; rules tier has no image understanding. Allowed local PNG/JPEG/WebP only, maximum 8MB; no uploads to external providers.',
         obj({'image_path':PATH,'question':string(minLength=1,maxLength=2000),'model_tier':string(enum=['rules','4gb','8gb'])},['image_path','question']),

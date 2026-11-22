@@ -98,19 +98,35 @@ class PathPolicy:
             raise BoundaryError('Path changed during read; retry view_file')
         return real, data, hashlib.sha256(data).hexdigest()
 
-    def files(self, root: Path, max_files: int = 10_000, respect_gitignore: bool = True):
+    def files(self, root: Path, max_files: int = 10_000, respect_gitignore: bool = True,
+              exclude: list[str] | None = None):
         count = 0
-        patterns = []
+        # Explicit exclusions always apply; .gitignore patterns are additive.
+        patterns = [p.strip().rstrip('/') for p in (exclude or [])
+                    if isinstance(p, str) and p.strip()]
         ignore = root / '.gitignore'
         if respect_gitignore and ignore.is_file() and not ignore.is_symlink() and ignore.stat().st_size < 65536:
-            patterns = [s.strip() for s in ignore.read_text('utf-8', errors='replace').splitlines()
-                        if s.strip() and not s.startswith(('#', '!'))]
+            patterns += [s.strip() for s in ignore.read_text('utf-8', errors='replace').splitlines()
+                         if s.strip() and not s.startswith(('#', '!'))]
+
+        def excluded(rel: str) -> bool:
+            for p in patterns:
+                pattern = p.rstrip('/')
+                # A directory pattern excludes the whole subtree (fixtures/,
+                # tests, docs/...), a glob matches paths or leaf names.
+                if rel == pattern or rel.startswith(pattern + '/'):
+                    return True
+                if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(rel.rsplit('/', 1)[-1], pattern):
+                    return True
+            return False
+
         for base, dirs, files in os.walk(root, followlinks=False):
-            dirs[:] = sorted(d for d in dirs if d not in IGNORED and not (Path(base) / d).is_symlink())
+            dirs[:] = sorted(d for d in dirs if d not in IGNORED and not (Path(base) / d).is_symlink()
+                             and not excluded((Path(base) / d).relative_to(root).as_posix()))
             for name in sorted(files):
                 path = Path(base) / name
                 rel = path.relative_to(root).as_posix()
-                if path.is_symlink() or any(fnmatch.fnmatch(rel, p.rstrip('/')) or fnmatch.fnmatch(name, p) for p in patterns):
+                if path.is_symlink() or excluded(rel):
                     continue
                 try:
                     self.resolve(str(path), directory=False)

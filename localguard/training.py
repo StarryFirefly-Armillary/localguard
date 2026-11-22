@@ -589,14 +589,25 @@ def _model_class(config, transformers):
     return transformers.AutoModelForCausalLM
 
 
-def prepare_training_examples(tokenizer, records, max_length=4096):
+def prepare_training_examples(tokenizer, records, max_length=4096, skip_oversized=False,
+                              max_negative_ratio=None):
     if not tokenizer.chat_template:
         raise DatasetError('Local base tokenizer must provide a compatible chat/tool template')
     tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
     tokenizer.padding_side = 'right'
+    if max_negative_ratio is not None and (not math.isfinite(max_negative_ratio) or max_negative_ratio <= 0):
+        raise DatasetError('max_negative_ratio must be positive when supplied')
     examples = []
     lengths = []
+    negatives_used = 0
+    positives_used = 0
     for record in records:
+        is_negative = record['source'] == CLEAN_SOURCE
+        if (max_negative_ratio is not None and is_negative and positives_used
+                and negatives_used >= positives_used * max_negative_ratio):
+            lengths.append({'id': record['id'], 'source': record['source'], 'assistant_turn': 0,
+                            'tokens': 0, 'supervised_tokens': 0, 'skipped': 'negative_ratio_cap'})
+            continue
         messages = training_messages(record)
         for index, message in enumerate(messages):
             if message['role'] != 'assistant':
@@ -622,6 +633,10 @@ def prepare_training_examples(tokenizer, records, max_length=4096):
                 answer_len = len(ids) - len(prefix_ids)
                 keep = max_length - answer_len
                 if keep < 64:
+                    if skip_oversized:
+                        lengths.append({'id': record['id'], 'source': record['source'], 'assistant_turn': index,
+                                        'tokens': len(ids), 'supervised_tokens': answer_len, 'skipped': 'answer_exceeds_window'})
+                        continue
                     raise DatasetError(f'{record["id"]}: supervised answer does not fit seq{max_length}')
                 ids = ids[-max_length:]
                 prefix_ids = prefix_ids[-keep:]
@@ -631,11 +646,15 @@ def prepare_training_examples(tokenizer, records, max_length=4096):
                              'labels': [-100] * len(prefix_ids) + ids[len(prefix_ids):]})
             lengths.append({'id': record['id'], 'source': record['source'], 'assistant_turn': index,
                             'tokens': len(ids), 'supervised_tokens': len(ids) - len(prefix_ids)})
+            if is_negative:
+                negatives_used += 1
+            else:
+                positives_used += 1
     return examples, lengths
 
 
 def train_adapter(base_model: Path, records, output: Path, *, rank=16, accumulation=8, epochs=1.0,
-                  gradient_checkpointing=True, max_length=4096):
+                  gradient_checkpointing=True, max_length=4096, skip_oversized=False, max_negative_ratio=None):
     """Explicit opt-in call only. Saves an adapter; does not imply evaluation passed.
 
     gradient_checkpointing defaults on for low-VRAM safety. On hosts whose
@@ -665,7 +684,7 @@ def train_adapter(base_model: Path, records, output: Path, *, rank=16, accumulat
         raise DatasetError('NF4 QLoRA needs a supported local CUDA/bitsandbytes environment')
     config = transformers.AutoConfig.from_pretrained(str(base), local_files_only=True, trust_remote_code=False)
     tokenizer = transformers.AutoTokenizer.from_pretrained(str(base), local_files_only=True, trust_remote_code=False)
-    examples, lengths = prepare_training_examples(tokenizer, records, max_length=max_length)
+    examples, lengths = prepare_training_examples(tokenizer, records, max_length=max_length, skip_oversized=skip_oversized, max_negative_ratio=max_negative_ratio)
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     quantization = transformers.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4', bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=dtype)
     model = _model_class(config, transformers).from_pretrained(str(base), config=config, local_files_only=True, trust_remote_code=False, quantization_config=quantization, device_map={'': 0}, torch_dtype=dtype)
@@ -677,7 +696,7 @@ def train_adapter(base_model: Path, records, output: Path, *, rank=16, accumulat
     trainer.train()
     model.save_pretrained(str(output), safe_serialization=True)
     tokenizer.save_pretrained(str(output))
-    return {'adapter': str(output), 'training_turns': len(examples), 'rank': rank, 'sequence_length': 4096, 'evaluation_gate': 'NOT RUN; evaluate paired held-out predictions before deployment'}
+    return {'adapter': str(output), 'training_turns': len(examples), 'skipped_turns': sum(1 for x in lengths if x.get('skipped')), 'rank': rank, 'sequence_length': max_length, 'evaluation_gate': 'NOT RUN; evaluate paired held-out predictions before deployment'}
 
 
 def merge_adapter(base_model: Path, adapter: Path, output: Path):

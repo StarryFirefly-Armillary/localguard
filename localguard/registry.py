@@ -178,6 +178,52 @@ class ToolRegistry:
         if name=='git_diff':
             async with self.store.resource():
                 return await self.engine.diff(args['repo'],args.get('base','HEAD~1'),args.get('head','HEAD'))
+        if name=='clone_repository':
+            # Single explicit network action. host allowlist enforced twice
+            # (schema pattern + here); no credentials, ports, query or fragment.
+            from .process import run
+            parsed = urlsplit(args['url'])
+            if parsed.scheme != 'https' or parsed.hostname not in self.config.git_hosts \
+                    or parsed.username or parsed.password or parsed.port or parsed.query or parsed.fragment:
+                raise BoundaryError('Repository URL is not an allowlisted plain HTTPS Git URL')
+            binary = self.config.binaries.get('git')
+            if not binary or not Path(binary).is_file():
+                raise ValueError('Git is unavailable; configure a local git binary')
+            async with self.store.resource():
+                clone_id = hashlib.sha256(args['url'].encode()).hexdigest()[:16]
+                destination = (self.config.data_dir / 'repositories' / clone_id).resolve()
+                if not destination.is_relative_to(self.config.data_dir):
+                    raise BoundaryError('Clone destination escapes the local state directory')
+                if not (destination / '.git').exists():
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    code, _, stderr = await run(
+                        [binary, '--no-pager', '-c', 'protocol.file.allow=never',
+                         '-c', 'protocol.ext.allow=never', '-c', 'protocol.submodule.allow=never',
+                         '-c', 'core.symlinks=false', '-c', f'core.hooksPath={self.config.data_dir / "no-hooks"}',
+                         'clone', '--depth', '2', '--no-recurse-submodules', '--', args['url'], str(destination)],
+                        self.config.data_dir, self.config.scanner_timeout)
+                    if code or not (destination / '.git').exists():
+                        # A failed clone leaves a partial directory behind;
+                        # remove it so a retry starts clean.
+                        import shutil as _shutil
+                        try:
+                            if destination.exists():
+                                _shutil.rmtree(destination, ignore_errors=True)
+                        except BaseException:
+                            pass
+                        diagnostic = (stderr or b'').decode('utf-8', errors='replace').strip()
+                        lines = [line.strip() for line in diagnostic.splitlines() if line.strip()]
+                        last = lines[-1][:300] if lines else f'git exited with code {code}'
+                        if any(k in diagnostic.lower() for k in ('502', 'schannel', 'tunnel', 'proxy', 'Could not resolve')):
+                            hint = '网络代理或 DNS 问题；检查代理设置后重试，或手动 clone 到本地目录后填本地路径。'
+                        elif 'not found' in diagnostic.lower() or 'repository' in diagnostic.lower() and '404' in diagnostic:
+                            hint = '仓库不存在或不可访问；确认 URL 与权限。'
+                        else:
+                            hint = '可重试，或手动 clone 到本地目录后填本地路径。'
+                        raise ValueError(f'克隆失败：{last}。{hint}')
+                if destination not in self.policy.roots:
+                    self.policy.roots.append(destination)
+                return {'path': str(destination), 'url': args['url'], 'cloned': True}
         if name=='audit_repository':
             return self.engine.submit(args,session)
         if name=='get_audit_status':

@@ -5,13 +5,14 @@ from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 from urllib.parse import urlsplit
 
 from .git_evidence import OID, REF, diff_changes, git_command, revision_tree, write_revision_snapshot
 from .paths import BoundaryError, PathPolicy, safe_relative
 from .process import run
-from .reporting import EvidenceError, from_finding, rank
+from .reporting import SEVERITIES, EvidenceError, compare_baseline, from_finding, rank
 
 
 class AuditEngine:
@@ -67,9 +68,15 @@ class AuditEngine:
         return destination.resolve()
 
     @contextmanager
-    def snapshot(self, root, revision=None):
-        with tempfile.TemporaryDirectory(prefix='scan-',dir=self.config.data_dir) as temp:
-            snapshot = Path(temp)
+    def snapshot(self, root, revision=None, exclude_paths=None, auto_exclude=True):
+        # Cleanup of the throwaway scan snapshot must never abort an audit. On
+        # Windows an OCaml scanner may leave read-only temp files, and a
+        # host-level rmtree shim can refuse bulk deletes. Neither affects the
+        # evidence already produced from the snapshot, so cleanup failures are
+        # contained here instead of escaping into the audit event loop.
+        temp = tempfile.mkdtemp(prefix='scan-',dir=self.config.data_dir)
+        snapshot = Path(temp)
+        try:
             if revision is not None:
                 hashes, skipped = write_revision_snapshot(root,snapshot,revision,self.registry.policy,self.config)
                 yield snapshot,hashes,skipped
@@ -77,7 +84,37 @@ class AuditEngine:
             hashes = {}
             skipped = []
             total = 0
-            for path in self.registry.policy.files(root,self.config.max_files,respect_gitignore=False):
+            from .discovery import classify, is_test_root
+            # If the audit target itself is a fixture/test directory, the user
+            # deliberately chose it (e.g. scanner regression fixtures). Do not
+            # auto-exclude its contents; only nested targets inside a larger
+            # project get the discovery policy.
+            auto_active = bool(auto_exclude) and not is_test_root(root)
+            candidates = list(self.registry.policy.files(
+                root,self.config.max_files,respect_gitignore=False,exclude=exclude_paths)) if auto_active else []
+            # A target whose files are almost all self-declared fixtures is a
+            # sample library the user deliberately chose to review. Trust that
+            # intent instead of emptying the report.
+            if candidates:
+                declared = sum(1 for p in candidates
+                               if classify(Path(p),root,trust_declarations=True,
+                                           skip_tests=False,skip_generated=False,skip_nonsource=False))
+                if declared and declared / len(candidates) >= 0.8:
+                    auto_active = False
+                    candidates = []
+            auto_reasons = {}
+            paths = candidates if auto_active else self.registry.policy.files(
+                root,self.config.max_files,respect_gitignore=False,exclude=exclude_paths)
+            for path in paths:
+                path = Path(path)
+                if auto_active:
+                    try:
+                        reason = classify(path,root)
+                    except (ValueError,OSError):
+                        reason = None
+                    if reason:
+                        auto_reasons[path.relative_to(root).as_posix()] = reason
+                        continue
                 if path.is_relative_to(self.config.data_dir) and not root.is_relative_to(self.config.data_dir / 'repositories'):
                     continue
                 if path.stat().st_size > self.config.max_file_bytes:
@@ -98,7 +135,21 @@ class AuditEngine:
                 destination.parent.mkdir(parents=True,exist_ok=True)
                 destination.write_bytes(data)
                 hashes[relative.as_posix()] = digest
+            if auto_active and auto_reasons:
+                by_reason = {}
+                for rel, reason in auto_reasons.items():
+                    by_reason.setdefault(reason, []).append(rel)
+                parts = [f'{reason}: {len(rels)} file(s) e.g. {rels[0]}'
+                         for reason, rels in sorted(by_reason.items())]
+                skipped.append('Auto-excluded non-review targets (disable with auto_exclude=false): '
+                               + '; '.join(parts))
             yield snapshot,hashes,skipped
+        finally:
+            try:
+                shutil.rmtree(temp,ignore_errors=True)
+            except BaseException:
+                # BaseException also covers SystemExit from host deletion shims.
+                pass
 
     async def scanner(self, scanner, target, ruleset='default'):
         from .scanners import run_scanner
@@ -183,12 +234,38 @@ class AuditEngine:
             contexts = {}
             coverage = {}
             async with self.store.resource():
-                with self.snapshot(root,revision) as (snapshot,hashes,skipped):
+                with self.snapshot(root,revision,args.get('exclude_paths'),
+                                   args.get('auto_exclude',True)) as (snapshot,hashes,skipped):
                     result['warnings'] += skipped
                     result['coverage'] = {'files':len(hashes),'excluded_files':len(skipped),'scanners':coverage,'depth':depth}
                     for index,scanner in enumerate(selected):
-                        output = await run_scanner(scanner,snapshot,'security',binaries=self.config.binaries,
-                                                   timeout=self.config.scanner_timeout,offline=self.config.offline)
+                        # Result cache: key = scanner + rule files + exact file
+                        # digests. A hit skips only the slow subprocess; evidence
+                        # is still rewritten below so raw_ref links stay valid.
+                        cache_key = None
+                        output = None
+                        try:
+                            rules_dir = Path(__file__).parent / 'rules'
+                            rule_stamp = '|'.join(f'{p.name}:{p.stat().st_mtime_ns}'
+                                                  for p in sorted(rules_dir.glob('*.json')))
+                            material = scanner + '|' + rule_stamp + '|' + '|'.join(
+                                f'{k}:{v}' for k, v in sorted(hashes.items()))
+                            cache_key = hashlib.sha256(material.encode('utf-8')).hexdigest()
+                            output = self.store.cache_get(cache_key)
+                        except Exception:
+                            output = None
+                        if output is None:
+                            output = await run_scanner(scanner, snapshot, 'security',
+                                                       binaries=self.config.binaries,
+                                                       timeout=self.config.scanner_timeout,
+                                                       offline=self.config.offline)
+                            if cache_key and output.get('status') == 'completed':
+                                try:
+                                    self.store.cache_put(cache_key, output)
+                                except Exception:
+                                    pass
+                        else:
+                            result.setdefault('cache_hits', []).append(scanner)
                         coverage[scanner] = output['status']
                         result['warnings'] += [f'{scanner}: {w}' for w in output.get('warnings',[])]
                         if output['status'] != 'completed':
@@ -217,6 +294,7 @@ class AuditEngine:
                                 contexts[issue['id']] = {
                                     'id': issue['id'], 'title': issue['title'][:300], 'severity': issue['severity'],
                                     'category': issue['category'], 'cwe': issue['cwe'], 'language': read['data']['language'],
+                                    'origin_hint': Path(original).parent.relative_to(root).as_posix()[:200],
                                     'source': [{'line': row['line'], 'text': row['text'][:100]} for row in read['data']['lines']],
                                     'source_truncated': any(len(row['text']) > 100 for row in read['data']['lines']),
                                 }
@@ -230,19 +308,85 @@ class AuditEngine:
             result['issues'] = rank(issues)
             tier = args.get('model_tier', self.config.model_tier)
             if result['issues'] and (tier == '8gb' or (tier == '4gb' and self.config.model_4gb_path)):
+                want_triage = args.get('model_triage', True)
                 try:
                     records = [contexts[issue['id']] for issue in result['issues']]
-                    explanations = await self.registry.get_model().explain_issues(records, tier)
+                    model = self.registry.get_model()
+                    try:
+                        explanations = await model.explain_issues(records, tier, triage=want_triage)
+                    except (ValueError, OSError, RuntimeError) as triage_exc:
+                        # Triage is advisory; never sacrifice explanations for it.
+                        if not want_triage:
+                            raise
+                        self.store.log(event='model_triage_failed', audit_id=job['id'],
+                                       session=session, reason=str(triage_exc)[:300], tier=tier)
+                        want_triage = False
+                        explanations = await model.explain_issues(records, tier, triage=False)
+                    triage_records = []
                     for issue in result['issues']:
                         update = explanations[issue['id']]
                         issue.update(explanation=update['explanation'], remediation=update['remediation'])
+                        if want_triage and 'verdict' in update:
+                            issue['triage'] = {
+                                'verdict': update['verdict'],
+                                'confidence': update.get('confidence', 0.5),
+                                'reason': str(update.get('reason', '')),
+                                'tier': tier,
+                                'overridden': False,
+                            }
+                            triage_records.append({'issue_id': issue['id'],
+                                                   'verdict': update['verdict'],
+                                                   'confidence': update.get('confidence'),
+                                                   'reason': str(update.get('reason', ''))[:300]})
+                    if triage_records:
+                        # One batched write: per-issue log calls can hit a
+                        # transient SQLITE_READONLY under WAL lock contention.
+                        self.store.log(event='model_triage', audit_id=job['id'], session=session,
+                                       tier=tier, verdicts=triage_records)
+                    if want_triage:
+                        # Advisory reorder only: nothing is removed and severity is untouched.
+                        penalty = {'likely_true': 0, 'uncertain': 1, 'likely_false': 2}
+                        result['issues'].sort(key=lambda i: (
+                            penalty.get((i.get('triage') or {}).get('verdict'), 1),
+                            SEVERITIES[i['severity']], -i['confidence'],
+                            i['locations'][0]['path'], i['locations'][0]['line'], i['id']))
                     result['coverage']['model_explanation'] = 'completed'
+                    if want_triage:
+                        result['coverage']['model_triage'] = 'completed'
                     result['completed_modules'].append('model_explanation')
                 except (ValueError, OSError, RuntimeError) as exc:
                     result['coverage']['model_explanation'] = 'unavailable'
+                    if want_triage:
+                        result['coverage']['model_triage'] = 'unavailable'
                     message = 'Model files could not be accessed' if isinstance(exc, OSError) else str(exc)
                     result['warnings'].append('Local model explanation unavailable; deterministic findings retained. ' + message[:600])
             result['warnings'] = list(dict.fromkeys(result['warnings']))
+            # Chinese explanations for coverage warnings are presentation-only.
+            # A model tier must be active; in rules mode the verbatim warnings
+            # remain unchanged. Any failure is advisory and never fails the audit.
+            if result['warnings'] and tier in ('4gb', '8gb') and (tier != '4gb' or self.config.model_4gb_path):
+                try:
+                    model = self.registry.get_model()
+                    translations = await model.explain_warnings(result['warnings'], tier)
+                    result['warning_explanations'] = {
+                        result['warnings'][int(wid[1:])]: explanation
+                        for wid, explanation in translations.items()
+                        if wid.startswith('W') and wid[1:].isdigit()
+                        and 0 <= int(wid[1:]) < len(result['warnings'])
+                    }
+                except (ValueError, OSError, RuntimeError) as exc:
+                    self.store.log(event='warning_explanation_failed', audit_id=job['id'],
+                                   session=session, reason=str(exc)[:300], tier=tier)
+            # Change review against the previous audit of the same target.
+            # Purely advisory: any failure is swallowed so it can never fail
+            # an otherwise valid audit.
+            try:
+                baseline = self.store.baseline_for(args['target'], job['id'])
+                comparison = compare_baseline(result['issues'], baseline)
+                if comparison:
+                    result['baseline'] = comparison
+            except Exception:
+                pass
             result['completed_modules'].append('locations_validation')
             result.update(status='completed',progress=100)
         except asyncio.CancelledError:

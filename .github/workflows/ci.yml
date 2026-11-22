@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly detection-regression watch (Mondays 03:00 UTC).
+    - cron: '0 3 * * 1'
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+      - name: Unit tests
+        run: python -m pytest -q
+
+  compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check bundled rules provenance
+        run: python scripts/check_licenses.py
+
+  benchmark:
+    # Detection regression watch. Only needs semgrep + gitleaks (no 3 GB DB).
+    # Fails the job when recall drops below the floor, so a bad rule change
+    # cannot merge or slip past the weekly run.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install project and scanners
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test]"
+          python -m pip install semgrep
+      - name: Clone benchmark app
+        run: git clone --depth 1 https://github.com/laugiov/code-safety.git repos/code-safety
+      - name: Run detection benchmark (recall floor 40%)
+        run: python scripts/bench_detection.py --json benchmarks/last-run.json
+      - name: Show recall trend
+        shell: bash
+        run: python scripts/bench_history.py --append benchmarks/last-run.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-result
+          path: |
+            benchmarks/last-run.json
+            benchmarks/history.jsonl

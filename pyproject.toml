@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "localguard-audit"
 version = "0.1.0"
 description = "Evidence-first local security auditing with native MCP tools"
+license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = [
   "mcp==1.27.1", "fastapi>=0.115,<1", "uvicorn>=0.30,<1",

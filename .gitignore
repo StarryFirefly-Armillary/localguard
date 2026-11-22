@@ -63,3 +63,11 @@ Thumbs.db
 
 # ---- WorkBuddy session-local data ----
 .workbuddy/
+
+# ---- Downloaded toolchain binaries ----
+llama-b*-bin-win-*.zip
+
+# ---- Local checkouts cloned for auditing ----
+repos/
+benchmarks/last-run.json
+benchmarks/history.jsonl

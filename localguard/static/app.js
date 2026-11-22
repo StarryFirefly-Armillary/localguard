@@ -216,6 +216,14 @@
       state.bootstrapped = true;
       setConnection(true);
       alertIn('connection-alert', '');
+      // Advisory: model triage agreement with past human reviews.
+      fetch('/api/feedback-stats').then((r) => r.ok ? r.json() : null).then((stats) => {
+        const el = $('triage-accuracy');
+        if (stats && typeof stats.accuracy === 'number' && stats.decided > 0) {
+          el.textContent = `分诊一致率 ${stats.accuracy}% (${stats.decided} 项复核)`;
+          el.hidden = false;
+        }
+      }).catch(() => {});
       renderCoverage();
       if (isActive()) schedulePoll(0);
       announce('本地服务已连接，可以开始审查。');
@@ -236,13 +244,19 @@
       $(`${name}-panel`).hidden = !active;
     });
     $('chat-transcript').hidden = mode !== 'chat';
+    schedulePills();
   }
 
   function context() {
     if (!$('target').reportValidity()) return null;
     const target = $('target').value.trim();
     if (!target) { $('target').setCustomValidity('请输入目标仓库或目录路径。'); $('target').reportValidity(); return null; }
-    return { target, model_tier: $('model-tier').value };
+    const args = { target, model_tier: $('model-tier').value,
+                   auto_exclude: $('auto-exclude').checked,
+                   model_triage: $('model-triage').checked };
+    const excluded = $('exclude-paths').value.split(',').map((s) => s.trim()).filter(Boolean);
+    if (excluded.length) args.exclude_paths = excluded;
+    return args;
   }
 
   function formArguments() {
@@ -258,18 +272,52 @@
     return { ...shared, depth: document.querySelector('input[name="depth"]:checked').value, scanners, include_dependencies: $('include-dependencies').checked, incremental, base: incremental ? base : 'HEAD~1', head: incremental ? head : 'HEAD' };
   }
 
+  function confirmClone(url) {
+    return new Promise((resolve) => {
+      const dialog = $('clone-dialog');
+      $('clone-dialog-url').textContent = url;
+      dialog.hidden = false;
+      const finish = (value) => {
+        dialog.hidden = true;
+        $('clone-confirm').removeEventListener('click', accept);
+        $('clone-cancel').removeEventListener('click', decline);
+        resolve(value);
+      };
+      const accept = () => finish(true);
+      const decline = () => finish(false);
+      $('clone-confirm').addEventListener('click', accept);
+      $('clone-cancel').addEventListener('click', decline);
+      $('clone-confirm').focus();
+    });
+  }
+
   async function submitAudit(args) {
     if (!args || !state.ready || state.submitting || isActive() || state.chatBusy || state.imageBusy) return;
     state.submitting = true;
     updateControls();
     alertIn('submit-alert', '');
     try {
-      const data = await tool('audit_repository', args);
+      let target = args.target;
+      if (/^https:\/\//i.test(target)) {
+        const ok = await confirmClone(target);
+        if (!ok) { announce('已取消克隆，未创建审查任务。'); return; }
+        alertIn('submit-alert', '正在克隆远程仓库到本地，请稍候…');
+        let cloned;
+        try {
+          cloned = await tool('clone_repository', { url: target }, 180000);
+        } catch (error) {
+          throw new ApiError(`克隆失败：${readable(error)} 仓库未更改，可重试或改用本地路径。`);
+        }
+        target = cloned.path;
+        $('target').value = target;
+        alertIn('submit-alert', '');
+      }
+      const data = await tool('audit_repository', { ...args, target });
       if (!data.audit_id) throw new ApiError('服务未返回任务编号；请检查服务状态，重试可能创建新任务。');
-      adoptAudit({ ...data, target: data.target || args.target }, args);
+      adoptAudit({ ...data, target: data.target || target }, { ...args, target });
       announce('审查任务已提交，正在同步工具执行进度。');
     } catch (error) {
-      alertIn('submit-alert', `${readable(error)} 未收到有效任务编号；请确认后再重试，避免重复创建任务。`, () => submitAudit(args), '重新提交');
+      alertIn('submit-alert', readable(error), () => submitAudit(args), '重新提交');
     } finally { state.submitting = false; updateControls(); }
   }
 
@@ -409,7 +457,10 @@
     $('stat-total').textContent = String(list.length);
     $('stat-high').textContent = String(list.filter((issue) => ['high', 'critical'].includes(severity(issue))).length);
     $('stat-unreviewed').textContent = String(unreviewed);
-    $('stat-total-note').textContent = state.audit.truncated ? '返回结果已截断' : isActive() ? '持续接收初步发现' : '当前范围内的工具发现';
+    const baseline = state.audit?.baseline;
+    $('stat-total-note').textContent = baseline
+      ? `对比上次：新增 ${baseline.added.length} · 消失 ${baseline.resolved.length}`
+      : state.audit.truncated ? '返回结果已截断' : isActive() ? '持续接收初步发现' : '当前范围内的工具发现';
     $('stat-review-note').textContent = `${list.length - unreviewed} 项已人工标记`;
   }
 
@@ -423,7 +474,20 @@
     else if (returned) warnings.push(readable(returned));
     if (state.audit?.truncated) warnings.push('服务端已截断结果。当前列表可能不完整，请结合导出报告与本地日志复核。');
     $('coverage-panel').hidden = !warnings.length;
-    $('coverage-warnings').replaceChildren(...[...new Set(warnings)].map((warning) => node('li', '', warning)));
+    const explanations = state.audit?.warning_explanations || {};
+    $('coverage-warnings').replaceChildren(...[...new Set(warnings)].map((warning) => {
+      const li = node('li', 'coverage-item');
+      const zh = explanations[warning];
+      if (zh && zh !== warning) {
+        li.append(node('span', 'coverage-zh', text(zh)));
+        const details = node('details', 'coverage-raw');
+        details.append(node('summary', '', '查看原文'), node('span', 'mono', text(warning)));
+        li.append(details);
+      } else {
+        li.append(node('span', '', text(warning)));
+      }
+      return li;
+    }));
   }
 
   function locationsOf(issue) { return Array.isArray(issue.locations) ? issue.locations.filter((location) => location && typeof location === 'object') : []; }
@@ -436,12 +500,17 @@
     const focusKey = focus?.dataset?.focusKey;
     const severityFilter = state.severity;
     const reviewFilter = $('review-filter').value;
+    const triageFilter = $('triage-filter').value;
     const search = $('issue-search').value.trim().toLocaleLowerCase();
     const all = issues();
     const filtered = all.filter((issue) => {
       const searchable = [issue.title, issue.id, issue.cwe, issue.category, ...locationsOf(issue).map((location) => location.path)].join(' ').toLocaleLowerCase();
-      return (severityFilter === 'all' || severity(issue) === severityFilter) && (reviewFilter === 'all' || reviewOf(issue) === reviewFilter) && (!search || searchable.includes(search));
-    }).sort((a, b) => SEVERITY_ORDER.indexOf(severity(a)) - SEVERITY_ORDER.indexOf(severity(b)) || (Number(b.confidence) || 0) - (Number(a.confidence) || 0) || text(locationsOf(a)[0]?.path).localeCompare(text(locationsOf(b)[0]?.path)));
+      const verdict = issue.triage?.verdict || 'none';
+      return (severityFilter === 'all' || severity(issue) === severityFilter)
+        && (reviewFilter === 'all' || reviewOf(issue) === reviewFilter)
+        && (triageFilter === 'all' || verdict === triageFilter)
+        && (!search || searchable.includes(search));
+    });
     $('issue-count').textContent = String(all.length);
     $('results-note').textContent = state.audit ? `显示 ${filtered.length} / ${all.length} 项${isActive() ? ' · 初步结果，仍在更新' : ''}${state.audit.truncated ? ' · 已截断' : ''}` : '按风险等级、置信度与文件排序';
     list.replaceChildren();
@@ -489,6 +558,21 @@
     const card = node('article', `issue-card severity-${level}${state.selectedIssue === id ? ' selected' : ''}${decision === 'false_positive' ? ' false-positive' : ''}`);
     const top = node('div', 'issue-topline');
     top.append(node('span', `badge severity-${level}`, SEVERITIES[level]), node('span', 'issue-category', CATEGORIES[issue.category] || text(issue.category, '未分类')));
+    const triage = issue.triage;
+    if (triage && triage.verdict) {
+      const labels = { likely_true: '模型：可能是真的', likely_false: '模型：可能误报', uncertain: '模型：不确定' };
+      const badge = node('span', `badge triage-${triage.verdict}${triage.overridden ? ' triage-overridden' : ''}`,
+                         (labels[triage.verdict] || '模型分诊') + (triage.overridden ? ' · 已人工推翻' : ''));
+      badge.title = text(triage.reason, '');
+      top.append(badge);
+    }
+    const feedback = issue.feedback;
+    if (feedback && (feedback.rule_confirmed || feedback.rule_false_positive)) {
+      const fb = node('span', 'badge feedback-badge',
+                      `历史复核：确认 ${feedback.rule_confirmed} · 误报 ${feedback.rule_false_positive}`);
+      fb.title = '基于同一规则的过往人工复核，仅供参考，不自动判定';
+      top.append(fb);
+    }
     if (typeof issue.confidence === 'number' && Number.isFinite(issue.confidence)) top.append(node('span', 'issue-confidence', `置信度 ${Math.round(Math.max(0, Math.min(1, issue.confidence)) * 100)}%`));
     card.append(top, node('h4', '', text(issue.title, '未命名问题')), node('p', 'issue-id mono', [id, text(issue.cwe)].filter(Boolean).join(' / ')));
     const locations = locationsOf(issue);
@@ -1004,10 +1088,12 @@
     if (!button) return;
     state.severity = button.dataset.severity;
     $('severity-filters').querySelectorAll('button').forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+    schedulePills();
     renderIssues();
   });
   $('issue-search').addEventListener('input', renderIssues);
   $('review-filter').addEventListener('change', renderIssues);
+  $('triage-filter').addEventListener('change', renderIssues);
   $('refresh-tree').addEventListener('click', loadTree);
   $('toggle-tree').addEventListener('click', () => {
     const hidden = !$('file-tree-pane').hidden;
@@ -1069,6 +1155,84 @@
   $('remove-image').addEventListener('click', clearImage);
   $('analyze-image').addEventListener('click', analyzeImage);
   $('export-report').addEventListener('click', exportReport);
+
+  // ---- Sliding indicator for grouped buttons --------------------------------
+  // The pill is absolutely positioned (out of flow) so moving it never
+  // reflows the page. Position is derived from the actually-selected button,
+  // so the animation can never drift out of sync with the ARIA state.
+  const pillGroups = [
+    { root: document.querySelector('.mode-tabs'), attr: 'aria-selected' },
+    { root: $('severity-filters'), attr: 'aria-pressed' },
+  ].filter((g) => g.root);
+
+  function placePills() {
+    for (const { root, attr } of pillGroups) {
+      const pill = root.querySelector('.slide-pill');
+      if (!pill) continue;
+      const active = [...root.children].find((el) => el.tagName === 'BUTTON' && el.getAttribute(attr) === 'true');
+      if (!active) { pill.classList.remove('ready'); continue; }
+      // offsetLeft/Top are relative to the offsetParent (the group), and work
+      // for wrapped rows on narrow screens as well.
+      pill.style.width = `${active.offsetWidth}px`;
+      pill.style.height = `${active.offsetHeight}px`;
+      pill.style.transform = `translate(${active.offsetLeft}px, ${active.offsetTop}px)`;
+      pill.classList.add('ready');
+    }
+  }
+
+  let pillFrame = 0;
+  function schedulePills() {
+    if (pillFrame) return;                 // coalesce repeated triggers into one frame
+    pillFrame = requestAnimationFrame(() => { pillFrame = 0; placePills(); });
+  }
+  const pillObserver = new ResizeObserver(schedulePills);
+  for (const { root } of pillGroups) {
+    pillObserver.observe(root);
+    root.querySelectorAll('button').forEach((b) => pillObserver.observe(b));
+  }
+  // Re-measure after fonts settle: Saira changes label widths on first paint.
+  if (document.fonts?.ready) document.fonts.ready.then(schedulePills);
+  window.addEventListener('resize', schedulePills, { passive: true });
+  schedulePills();
+
+  // ---- Menu expand / collapse ----------------------------------------------
+  // Native <details> toggles instantly. Animate the body height between 0 and
+  // its natural height, then release the inline height so dynamic content can
+  // still grow. In-flight animations are cancelled so rapid clicks never
+  // leave a stale height or a stuck state.
+  const menuAnimations = new WeakMap();
+  document.querySelectorAll('#advanced-options').forEach((details) => {
+    const body = details.querySelector('.advanced-body');
+    const summary = details.querySelector('summary');
+    if (!body || !summary) return;
+    summary.addEventListener('click', (event) => {
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return; // keep native instant toggle
+      event.preventDefault();
+      const opening = !details.open;
+      const existing = menuAnimations.get(body);
+      if (existing) existing.cancel();
+      details.open = true; // content must be in layout to measure
+      const target = body.scrollHeight;
+      const from = opening ? 0 : target;
+      const to = opening ? target : 0;
+      body.style.overflow = 'hidden';
+      body.style.height = `${from}px`;
+      const animation = body.animate(
+        [{ height: `${from}px` }, { height: `${to}px` }],
+        { duration: 180, easing: 'cubic-bezier(0.7,0,0.2,1)', fill: 'forwards' },
+      );
+      menuAnimations.set(body, animation);
+      animation.finished.then(() => {
+        if (menuAnimations.get(body) !== animation) return; // superseded by a newer click
+        menuAnimations.delete(body);
+        body.style.height = '';
+        body.style.overflow = '';
+        details.open = opening;
+        schedulePills();
+      }).catch(() => {}); // cancelled animation: a newer one owns the state
+    });
+  });
+
   window.addEventListener('beforeunload', () => { stopPolling(); if (state.imageUrl) URL.revokeObjectURL(state.imageUrl); });
   bootstrap();
 })();

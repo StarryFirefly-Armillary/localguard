@@ -54,6 +54,10 @@ def main(argv=None):
                                  help='Disable activation checkpointing (faster when attention kernels fall back to PyTorch; requires confirmed 8GB headroom at batch 1)')
             command.add_argument('--max-length', type=int, default=4096,
                                  help='Training window; values below 4096 truncate the oldest evidence tokens but never the supervised answer')
+            command.add_argument('--max-negative-ratio', type=float,
+                                 help='Cap negative (clean_evidence) turns relative to positive turns, e.g. 1.0 for balance')
+            command.add_argument('--skip-oversized', action='store_true',
+                                 help='Skip turns whose supervised answer will not fit --max-length instead of failing (recorded in training manifest)')
             command.add_argument('--resource-dir', type=Path, default=Path.home()/'.localguard', help='Shared LocalGuard state directory for exclusive host resource scheduling')
     for name in ('evaluate', 'merge'):
         command = commands.add_parser(name)
@@ -88,7 +92,8 @@ def main(argv=None):
                     return train_adapter(args.base_model, records, args.output, rank=args.rank,
                                          accumulation=args.gradient_accumulation, epochs=args.epochs,
                                          gradient_checkpointing=not args.no_gradient_checkpointing,
-                                         max_length=args.max_length)
+                                         max_length=args.max_length, skip_oversized=args.skip_oversized,
+                                         max_negative_ratio=args.max_negative_ratio)
             result['training'] = asyncio.run(scheduled_training())
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0

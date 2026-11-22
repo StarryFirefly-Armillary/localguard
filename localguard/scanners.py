@@ -63,9 +63,11 @@ def _finish(result: dict) -> dict:
         return len(json.dumps(result, ensure_ascii=True).encode('utf-8'))
     if size() > MAX_RESULT_BYTES:
         result['truncated'] = True
-        _warn(result, 'Structured result exceeded the output limit; findings were omitted.')
+        before = len(result['findings'])
         while result['findings'] and size() > MAX_RESULT_BYTES:
             result['findings'].pop()
+        if len(result['findings']) < before:
+            _warn(result, 'Structured result exceeded the output limit; findings were omitted.')
         if size() > MAX_RESULT_BYTES:
             result['raw'] = None
             _warn(result, 'Raw output omitted because its JSON representation exceeded the limit.')
@@ -622,6 +624,19 @@ def _normalize(scanner: str, root: Path, raw, result: dict, pins: dict) -> None:
                 extra.get('message', 'Semgrep finding'), item.get('check_id', ''), f'#/results/{index}',
                 severity=extra.get('severity'), category=metadata.get('category', _category(cwe)),
                 cwe=cwe, confidence=metadata.get('confidence'), remediation=metadata.get('remediation', ''))
+        # Semgrep's raw results carry bulky per-match metadata. The full
+        # payload blows the structured-output budget and drops most findings.
+        # Keep a compact index aligned with the raw_ref (#/results/{index});
+        # evidence text already lives in each finding's explanation fields.
+        # Only trim oversized payloads; small ones stay verbatim for evidence.
+        if len(json.dumps(raw, ensure_ascii=True).encode('utf-8')) > MAX_RESULT_BYTES // 2:
+            raw['results'] = [{
+                'check_id': r.get('check_id', ''),
+                'path': r.get('path', ''),
+                'start': r.get('start', {}),
+                'extra': {'message': (r.get('extra') or {}).get('message', ''),
+                          'severity': (r.get('extra') or {}).get('severity', '')},
+            } for r in raw.get('results', [])]
     elif scanner == 'gitleaks':
         for index, item in enumerate(raw or []):
             _add(result, root, item.get('File'), item.get('StartLine'), item.get('Description', 'Credential detected'),
@@ -691,6 +706,16 @@ def _normalize(scanner: str, root: Path, raw, result: dict, pins: dict) -> None:
                     category='dependency_cve', confidence=0.95,
                     explanation=vulnerability.get('description') or 'Grype database matched this package version; review applicability.',
                     remediation='Review advisory and upgrade to a compatible fixed version: ' + ', '.join(vulnerability.get('fix', {}).get('versions', [])))
+        # Grype advisories carry lengthy descriptions/URLs per match. The full
+        # payload is hundreds of KB and would push _finish() to drop every
+        # finding. Keep a compact index keyed by the same raw_ref used above;
+        # finding explanations already hold the human-readable advisory text.
+        raw['matches'] = [{
+            'artifact': {'name': (m.get('artifact') or {}).get('name', ''),
+                         'version': (m.get('artifact') or {}).get('version', '')},
+            'vulnerability': {'id': (m.get('vulnerability') or {}).get('id', ''),
+                              'severity': (m.get('vulnerability') or {}).get('severity', '')},
+        } for m in raw.get('matches', [])]
 
 
 async def run_scanner(scanner: str, target: Path, ruleset: str = 'default', *,
@@ -758,6 +783,13 @@ async def run_scanner(scanner: str, target: Path, ruleset: str = 'default', *,
                 configs = ['--config', str(RULE_DIR / 'backdoor.json')]
                 if ruleset != 'backdoor':
                     configs += ['--config', str(RULE_DIR / 'security.json')]
+                    # Curated offline rule pack maintained by the product,
+                    # never loaded from the repository under audit (supply-chain
+                    # risk: a hostile repo could ship rules that suppress or
+                    # distort findings).
+                    extended = RULE_DIR / 'security-extended.json'
+                    if extended.is_file():
+                        configs += ['--config', str(extended)]
                 args = ['scan', *configs, '--json', '--oss-only',
                     '--metrics=off', '--disable-version-check', '--disable-nosem',
                     '--no-git-ignore', '--no-rewrite-rule-ids', '--jobs=1',
@@ -780,7 +812,14 @@ async def run_scanner(scanner: str, target: Path, ruleset: str = 'default', *,
                         '--format=json', '--progress-spinner=off']
             else:
                 args = ['dir:' + str(root), '--config', str(RULE_DIR / 'grype.yaml'), '--output', 'json']
-            execution = await _execute([str(binary), *args], root, env, timeout)
+            # Semgrep and grype emit verbose structured JSON (extra metadata
+            # per match). A higher stream cap is safe: both are controlled
+            # offline tools, and _finish() still enforces the tighter
+            # MAX_RESULT_BYTES / MAX_FINDINGS limits on the normalized result.
+            # Grype against a 3 GB advisory DB can produce ~800 KB of matches.
+            stream_cap = 1024 * 1024 if scanner == 'grype' else (512 * 1024 if scanner == 'semgrep' else None)
+            execution = await _execute([str(binary), *args], root, env, timeout,
+                                       max_bytes=stream_cap)
         result['status'], result['truncated'] = execution['status'], result['truncated'] or execution['truncated']
         if execution['status'] != 'completed':
             _warn(result, 'Scanner timed out; its process tree was terminated.' if execution['status'] == 'timeout' else 'Scanner exceeded the combined streaming output limit; its process tree was terminated.')

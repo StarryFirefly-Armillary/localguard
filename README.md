@@ -2,7 +2,7 @@
 
 LocalGuard 是一个**完全本地运行**的代码安全审查工具。输入一个本地文件夹或允许的 Git 仓库，输出按风险排序、精确到 `文件:行号`、UI 可点击跳转的安全问题报告；同时把审查能力作为**原生 MCP Server** 暴露，Claude Desktop / Cursor / Claude Code / Windsurf / Cline 等任何 MCP 客户端都可直接调用，无需启动自带 UI。
 
-核心设计纪律：**准确性不交给 LLM**。所有行号都来自 tree-sitter AST 或静态扫描器输出，密钥/CVE/可疑模式由确定性工具判定；LLM 只负责选工具、串联调用、解释结果与生成分级报告，且不能凭空产生行号。
+核心设计纪律：**准确性不交给 LLM**。所有行号都来自 tree-sitter AST 或静态扫描器输出，密钥/CVE/可疑模式由确定性工具判定，LLM 不能凭空产生行号或凭空增删问题。模型有两项明确职责：**解释**每条已验证发现，以及**分诊**（给出 likely_true / likely_false / uncertain 的判断与理由，用于排序降噪）。分诊是**建议性**的：不删除问题、不改严重度、不宣称可利用性，每条判断写入审计日志，人工复核可推翻且会留痕。审查范围由**智能排除**收敛：跨生态的测试/夹具/生成目录、文件自声明的非执行样本、非源码产物会被自动跳过并给出原因，可一键关闭；对明确指向样本库本身的审查不生效。检出能力由**产品方维护的离线规则包**提供（`security-extended.json`，135 条精选 Semgrep 规则）；**绝不加载被审查仓库自带的规则**——那是供应链攻击面。
 
 ## 能力一览
 
@@ -90,7 +90,7 @@ python -m localguard --config localguard.example.json mcp
 }
 ```
 
-`tools/list` 暴露 8 个工具：`view_file`、`list_tree`、`get_ast`、`run_scanner`、`git_diff`、`audit_repository`、`get_audit_status`、`analyze_image`（内部 `rank_and_report` 不暴露）。描述中包含功能边界、参数示例、返回结构与限制，输入在 schema 层用 enum / pattern 约束，输出遵循严格 schema。
+`tools/list` 暴露 9 个工具：`view_file`、`list_tree`、`get_ast`、`run_scanner`、`git_diff`、`audit_repository`、`get_audit_status`、`analyze_image`、`clone_repository`（内部 `rank_and_report` 不暴露）。`clone_repository` 是唯一联网工具，仅拉取白名单 HTTPS 仓库到本地，需用户显式确认；审查本身始终离线。描述中包含功能边界、参数示例、返回结构与限制，输入在 schema 层用 enum / pattern 约束，输出遵循严格 schema。
 
 典型调用流程：
 
@@ -104,28 +104,61 @@ view_file(path=<abs>, start_line, end_line)   # 深链/证据核对
 
 ## 模型档位
 
-- `rules`（默认）：纯确定性规则编排，无需模型，适合 4GB 以下设备与离线环境。
+- `rules`（默认）：纯确定性规则编排，**完全不需要任何模型文件**，适合 4GB 以下设备与离线环境。
 - `4gb`：tool-call 路由 + 轻量解释；配置 `model_4gb_path` 指向本地小模型。
-- `8gb`：默认 Qwen3.5-4B Q4 GGUF 用于工具调用与解释；配置 `model_binary` / `model_path` / `mmproj_path`。
+- `8gb`：Qwen3.5-4B Q4 GGUF 用于工具调用与解释；配置 `model_binary` / `model_path` / `mmproj_path`。
 
 模型只生成解释与编排，不产生被信任的行号；解释失败时保留确定性发现并给出警告。
+
+### 没有模型文件怎么办？
+
+**什么都不用做，核心功能完整可用。** 本仓库不包含也不要求任何模型文件。请直接使用默认的 `model_tier: "rules"`：
+
+- `audit` / UI / MCP 三种入口都能跑完整审查：确定性扫描 → locations 校验 → 结构化报告 → 深链跳转，行号来自 tree-sitter / 扫描器，与模型无关。
+- 实测：无任何模型文件时对内置 fixtures 执行 `rules` 审查，得到 38 条 issue，`vulnerable.c:4` 等定位准确，`status: completed`。
+- 唯一差别：报告的「自然语言解释/修复建议」是规则生成的确定性文本，而不是 LLM 润色版本；`coverage.model_explanation` 不会出现，属于预期行为，不是错误。
+- 表单模式、MCP `audit_repository` 本来就不经过 LLM 选工具；只有**对话模式**和**模型解释**才需要模型。选 `rules` 时对话模式退化为确定性路由（见 `model.py` 的 rules 分支）。
+
+想启用模型时，按 `docs/TRAINING.md` 的步骤 A 自行下载一个 GGUF 并填入配置即可；这不是使用本工具的前提。
+
+## 渐进式训练指南
+
+如果你想从"纯 rules"逐步升级到"带本地模型解释"、再到"自己的 QLoRA adapter"，见 **[docs/TRAINING.md](docs/TRAINING.md)**：分阶段给出无需训练 → 现成 GGUF → 数据回流 → QLoRA 门控的完整路径。当前已有一个正负平衡、通过门控并合并的 adapter（FP16 产物，尚未量化为运行时 GGUF），详情见 `docs/STATUS.md`。
 
 ## 验证状态
 
 - 测试：`345 passed, 86 subtests`（`pytest -q`）。
 - 真实 MCP 客户端联调：Qoder Desktop 与另一 MCP 客户端均完成 `tools/list` 发现、`audit_repository` → `get_audit_status` 轮询、拿到与 UI 一致的结构化 issue（见发布包内的验证记录）。
 - 离线安装与审查：在离线环境用打包 wheel + 本地 wheels 安装后完成审查（见 `dist/offline/`）。
-- 已知边界：阶段 5 的 QLoRA adapter 仅完成数据/门控/评估脚手架，**配对评估门控未通过，adapter 未合并、未部署**；生产报告由确定性扫描器 + 校验层产出，模型解释始终是可选增强。详见仓库内 `docs/STATUS.md` 与 `docs/evidence/`。
+- 阶段 5 进展：一个正负平衡的 QLoRA adapter 已训练并通过配对评估门控（FPR 0.4→0.2、AUC 0.7→0.85，各项无退化），已合并并量化为运行时 Q4_K_M GGUF，产品配置已指向该微调模型。确定性扫描器 + 校验层仍是可信来源，模型解释是可选增强。详见 `docs/STATUS.md`。
 
 ## 开发与打包
 
 ```bash
 pytest -q                                   # 全套测试
+python scripts/check_licenses.py            # 规则包许可检查
+python scripts/bench_detection.py --config localguard.local.json --json benchmarks/last-run.json  # 检出率基准
 python scripts/build_offline_bundle.py --no-download   # 生成离线 bundle
 ```
+
+检出率基准对照 VulnShop 的 16 个已知漏洞（详见 [benchmarks/README.md](benchmarks/README.md)），改动规则或审查流程后可以跑它确认没有退化。CI 在 push/PR 时跑测试与许可检查；完整基准需扫描器二进制和本地漏洞库，在 Actions 里手动触发。
 
 离线 bundle 包含应用 wheel、应用/扫描器 wheels、扫描器二进制与 Grype DB，供无网络设备安装。仓库不提交虚拟环境、扫描器二进制、模型/数据库等大文件（见 `.gitignore`）。
 
 ## 说明
 
 本仓库仅包含源码、测试、脚本与静态测试样本；虚拟环境、扫描器二进制、模型文件、扫描数据库等运行产物未纳入版本控制，需按上述步骤在本地准备。
+
+## 许可
+
+本项目采用 [MIT License](LICENSE)。随项目分发的第三方组件来源与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 扩展规则包
+
+Semgrep 扫描器每次运行会加载 `localguard/rules/` 下的 `security.json`、`backdoor.json` 和 `security-extended.json`。三者都是**标准 Semgrep 规则格式**（JSON，结构为 `{"rules": [...]}`），你可以在本地编辑它们来增减规则——例如把 `security-extended.json` 替换为你自己整理或已获授权的规则集。改动是本地行为，不需要改代码；重启 UI 服务即可生效。
+
+添加规则前请注意：
+
+- 添加规则前确认你对规则来源拥有相应使用权；第三方规则的许可信息见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+- **规则 id 建议加自己的前缀**，避免与内置规则冲突。
+- **规则包不是越多越好**：过多的宽泛规则会放大噪声并被后续的数量/体积上限截断。改完建议用你熟悉的仓库跑一次，确认检出与误报都可接受。

@@ -1,0 +1,127 @@
+/* ==========================================================================
+   ef-bridge.css — LocalGuard 工作台的结构层
+   --------------------------------------------------------------------------
+   非颜色部分：宽体字体、眉标、切角、等宽数字、细线分区。
+   颜色一律沿用 style.css 的黑白灰变量，不接任何终末地强调色 token。
+   DOM 结构、id / class 与 app.js 逻辑不动。
+   ========================================================================== */
+
+/* 自托管宽体拉丁字（CSP: 'self'）。中文用系统黑体，不加载第三方资源。 */
+@font-face {
+  font-family: 'Saira';
+  src: url('/static/ef/fonts/Saira.ttf') format('truetype');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+:root {
+  --ef-cut: calc(6px * var(--ef-cut-k, 0.6));
+}
+
+/* 套件的 .ef 背景与文字色改回 style.css 的黑白变量 */
+body.ef { background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.5; }
+.ef a { color: inherit; }
+.ef ::selection { background: var(--accent); color: var(--bg); }
+
+/* 眉标 + 中英标题：结构保留，颜色沿用 style.css 的 muted/text */
+.eyebrow {
+  display: block;
+  font-family: var(--ef-font-ui);
+  font-size: .66rem;
+  font-stretch: var(--ef-wider);
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.eyebrow::before { content: '// '; letter-spacing: 0; }
+.app-header h1, .workspace-heading h2, .section-heading h1 { font-family: var(--ef-font-ui); font-weight: 700; letter-spacing: .01em; }
+
+/* 数字等宽：编号、统计、进度、行号、审计 id */
+.mono, .audit-id, .count-badge, .status-stats strong, .line-number,
+.field-label .label-note, .stat-total { font-family: var(--ef-font-ui); font-variant-numeric: tabular-nums; }
+.stat-total, .status-stats strong { font-stretch: var(--ef-wide); }
+
+/* 可点即切角：形状保留，配色由 style.css 决定 */
+.button, .mode-tab, .severity-filters button, .review-button,
+.icon-button, .location-button, .advanced-options > summary,
+.dropzone, .text-button, input, select {
+  border-radius: 0;
+}
+.button {
+  font-family: var(--ef-font-ui);
+  font-stretch: var(--ef-wide);
+  font-size: .8rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  clip-path: polygon(0 0, calc(100% - var(--ef-cut)) 0, 100% var(--ef-cut), 100% 100%, 0 100%);
+  padding-inline-end: calc(15px + var(--ef-cut));
+}
+.mode-tab[aria-selected='true'] { box-shadow: none; font-weight: 700; }
+.tree-entry.active { box-shadow: inset 3px 0 0 var(--accent); }
+.issue-card.selected { box-shadow: inset 3px 0 0 var(--accent), 0 0 0 1px var(--accent); }
+
+/* 分区用 1px 细线，去掉圆角和柔影；颜色沿用 style.css */
+.panel, .status-strip, .summary-card, .advanced-options, .coverage-panel, .dialog-card {
+  border-radius: 0;
+  box-shadow: none;
+}
+.coverage-panel h4 { font-family: var(--ef-font-ui); font-stretch: var(--ef-wide); letter-spacing: .08em; }
+
+/* 焦点：切角按钮内缩，避免焦点框被切掉；颜色沿用 style.css 的 --blue */
+.button:focus-visible, .mode-tab:focus-visible, .severity-filters button:focus-visible {
+  outline-offset: -4px;
+}
+
+/* 进度条：无渐变、无圆角；颜色沿用 style.css */
+progress { -webkit-appearance: none; appearance: none; border-radius: 0; }
+progress::-webkit-progress-value { transition: none; }
+
+/* 空状态：斜线纹带（灰阶），不用插画式大图标 */
+.empty-icon, .code-symbol { opacity: .35; }
+.empty-state { background: repeating-linear-gradient(-45deg, transparent 0 6px, color-mix(in srgb, var(--text) 6%, transparent) 6px 7px); }
+
+/* 机械动效：短、硬、无弹跳；沿用克制时长 */
+.button, .mode-tab, .severity-filters button, .review-button, .icon-button {
+  transition: background-color .1s var(--ef-ease), color .1s var(--ef-ease), border-color .1s var(--ef-ease);
+}
+.advanced-options > summary::before { transition: transform .12s var(--ef-mech); }
+.advanced-options[open] > summary::before { transform: rotate(90deg); }
+
+/* ---- 同组按钮的滑动指示器 ----
+   滑块绝对定位、不占文档流；按钮背景透明，让滑块从底下透出。
+   初始 opacity:0，JS 定位完成后加 .ready，避免首帧闪现在错误位置。 */
+.mode-tabs, .severity-filters { position: relative; }
+.slide-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  z-index: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(0);
+  transition: transform .26s var(--ef-mech), width .26s var(--ef-mech), opacity .12s linear;
+}
+.slide-pill.ready { opacity: 1; }
+/* CSS top/height stay at zero: JS positions the pill from the active button's
+   offsetTop/offsetHeight. A CSS top here would be added on top of that. */
+.mode-tabs .slide-pill { top: 0; height: 0; background: var(--bg); box-shadow: 0 1px 2px #00000012; }
+.mode-tab, .severity-filters button { position: relative; z-index: 1; }
+.mode-tab[aria-selected='true'],
+.severity-filters button[aria-pressed='true'] { background: transparent; box-shadow: none; }
+.mode-tab[aria-selected='true'] { color: var(--text); }
+.severity-filters button[aria-pressed='true'] { color: var(--bg); }
+/* 悬停只在非选中项上加浅底，避免和滑块叠加出双色块 */
+.mode-tab:not([aria-selected='true']):hover,
+.severity-filters button:not([aria-pressed='true']):hover { background: var(--panel-raised); }
+
+/* ---- 菜单展开/收起 ----
+   高度由 JS 过渡；这里只保证内容区不裁剪、无跳动。 */
+.advanced-options > .advanced-body { overflow: hidden; }
+
+/* 系统减少动态效果：全部静止 */
+@media (prefers-reduced-motion: reduce) {
+  .ef *, .ef *::before, .ef *::after { animation: none !important; transition: none !important; }
+}

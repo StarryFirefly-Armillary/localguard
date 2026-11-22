@@ -80,6 +80,60 @@ def rank(issues):
     return sorted(merged.values(),key=lambda i:(SEVERITIES[i['severity']],-i['confidence'],i['locations'][0]['path'],i['locations'][0]['line'],i['id']))
 
 
+def issue_signature(issue):
+    """Stable identity across audits (issue ids are regenerated each run)."""
+    location = issue.get('locations', [{}])[0]
+    return (location.get('path', ''), location.get('line', 0),
+            issue.get('category', ''), issue.get('title', '')[:80])
+
+
+def compare_baseline(current, baseline):
+    """New / resolved / persisted findings against a previous audit.
+
+    Comparison uses content signatures, never volatile issue ids. Reviews are
+    carried over only for identical signatures so a resolved item is not
+    mistaken for a still-open one.
+    """
+    if not baseline or not baseline.get('issues'):
+        return None
+    before = {issue_signature(i): i for i in baseline['issues']}
+    after = {issue_signature(i): i for i in current}
+    added = [i for sig, i in after.items() if sig not in before]
+    resolved = [i for sig, i in before.items() if sig not in after]
+    persisted = sum(1 for sig in after if sig in before)
+    return {
+        'baseline_audit_id': baseline.get('audit_id'),
+        'added': [i['id'] for i in added],
+        'resolved': [i['id'] for i in resolved],
+        'persisted': persisted,
+    }
+
+
+def reorder_by_feedback(issues):
+    """Advisory reordering from past human reviews — never drops or edits findings.
+
+    Rules repeatedly marked false_positive sink a bounded number of places;
+    critical/high findings are never demoted (safety first). Severity,
+    confidence and the original order fallback are all preserved.
+    """
+    ordered = list(issues)
+    for index, issue in enumerate(ordered):
+        feedback = issue.get('feedback') or {}
+        confirmed = feedback.get('rule_confirmed', 0)
+        false_positive = feedback.get('rule_false_positive', 0)
+        demote = 0
+        if SEVERITIES.get(issue['severity'], 9) > 1 and false_positive > confirmed:
+            # Bounded: one place per net false positive, capped at 2.
+            demote = min(2, false_positive - confirmed)
+        # Model triage ordering is handled once in the engine (penalty sort).
+        # Do not apply it again here: that would double-demote the same hint.
+        issue['_feedback_rank'] = (index + demote, index)
+    ordered.sort(key=lambda i: (i['_feedback_rank'][0], i['_feedback_rank'][1]))
+    for issue in ordered:
+        issue.pop('_feedback_rank', None)
+    return ordered
+
+
 def from_finding(finding, text):
     identity = f"{finding['path']}:{finding['line']}:{finding.get('rule_id',finding['title'])}"
     if finding['category'] == 'dependency_cve':
