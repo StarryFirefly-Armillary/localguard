@@ -570,3 +570,70 @@ async def test_warning_translation_drops_null_entry_without_failing_audit(setup,
     assert out['W000'] == '第一条中文说明'
     assert out['W002'] == '第三条中文说明'
     assert 'W001' not in out  # dropped; UI keeps the verbatim original
+
+
+@run_async
+async def test_explain_issues_self_heals_malformed_batch(setup, monkeypatch):
+    """A single null/garbage entry or a location mention in model prose must
+    not discard the whole batch (that silently disabled triage for every
+    audit). All expected IDs come back, unknown IDs are rejected."""
+    model, _, _ = setup
+    records = [
+        {'id': 'I-1', 'title': 't1', 'severity': 'high', 'category': 'injection',
+         'cwe': '', 'language': 'python', 'origin_hint': 'a.py',
+         'source': [{'line': 1, 'text': 'x=1'}]},
+        {'id': 'I-2', 'title': 't2', 'severity': 'high', 'category': 'injection',
+         'cwe': '', 'language': 'python', 'origin_hint': 'a.py',
+         'source': [{'line': 2, 'text': 'y=2'}]},
+    ]
+    # null entry + prose location + only one valid verdict
+    content = json.dumps({'explanations': [
+        {'id': 'I-1', 'explanation': '外部输入到达危险操作', 'remediation': '修复',
+         'verdict': 'likely_true', 'confidence': 0.9, 'reason': '证据明确'},
+        None,
+    ]})
+    async def infer(*args, **kwargs):
+        return {'choices': [{'message': {'content': content}}]}
+    monkeypatch.setattr(model, '_infer', infer)
+    out = await model.explain_issues(records, '8gb', triage=True)
+    assert set(out) == {'I-1', 'I-2'}
+    assert out['I-1']['verdict'] == 'likely_true'
+    assert '危险操作' in out['I-1']['explanation']
+    assert out['I-2']['explanation']  # neutral placeholder
+
+
+@run_async
+async def test_explain_issues_rejects_invented_ids(setup, monkeypatch):
+    model, _, _ = setup
+    records = [{'id': 'I-1', 'title': 't', 'severity': 'high', 'category': 'injection',
+                'cwe': '', 'language': 'python', 'origin_hint': 'a.py',
+                'source': [{'line': 1, 'text': 'x=1'}]}]
+    content = json.dumps({'explanations': [
+        {'id': 'FAKE', 'explanation': 'x', 'remediation': 'y'}]})
+    async def infer(*args, **kwargs):
+        return {'choices': [{'message': {'content': content}}]}
+    monkeypatch.setattr(model, '_infer', infer)
+    with pytest.raises(ModelUnavailable, match='batch 1'):
+        await model.explain_issues(records, '8gb', triage=False)
+
+
+@run_async
+async def test_triage_uses_larger_token_budget(setup, monkeypatch):
+    """Triage output (8 findings x explanation/remediation/reason/verdict)
+    exceeds 1024 tokens; a truncated JSON silently disabled triage."""
+    model, _, _ = setup
+    records = [{'id': 'I-1', 'title': 't', 'severity': 'high', 'category': 'injection',
+                'cwe': '', 'language': 'python', 'origin_hint': 'a.py',
+                'source': [{'line': 1, 'text': 'x=1'}]}]
+    sent = []
+    async def request(endpoint, method, route, payload=None):
+        if route == '/models':
+            return {'data': [{'id': 'Qwen3.5-4B-Q4_K_M'}]}
+        sent.append(payload)
+        content = json.dumps({'explanations': [
+            {'id': 'I-1', 'explanation': 'x', 'remediation': 'y',
+             'verdict': 'likely_true', 'reason': 'z'}]})
+        return response(content=content)
+    monkeypatch.setattr(model, '_request', request)
+    await model.explain_issues(records, '8gb', triage=True)
+    assert any(p.get('max_tokens') == 2048 for p in sent)

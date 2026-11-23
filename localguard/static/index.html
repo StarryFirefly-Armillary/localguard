@@ -53,8 +53,8 @@
               </select>
               <p id="model-help" class="field-help">模型只做编排与解释，不生成问题定位。</p>
               <label class="field-label" for="max-explanations">AI 解释条数上限 <span class="label-note">0 = 全部</span></label>
-              <input id="max-explanations" name="max_explanations" form="audit-form" type="number" min="0" max="500" step="1" value="40" placeholder="40">
-              <p class="field-help">按风险高低只为前 N 条生成 AI 文字解释；其余发现保留完整证据与行号，只是没有 AI 解说。默认 40 可大幅缩短审查用时。</p>
+              <input id="max-explanations" name="max_explanations" form="audit-form" type="number" min="0" max="500" step="1" value="16" placeholder="16">
+              <p class="field-help">按风险高低只为前 N 条生成 AI 文字解释；其余发现保留完整证据与行号，只是没有 AI 解说。默认 16。过多条数会让本地 4B 模型在后几批输出坏 JSON，导致分诊整体失效；低上限更稳且更快。</p>
               <label class="field-label" for="exclude-paths">排除路径 <span class="label-note">逗号分隔</span></label>
               <input id="exclude-paths" name="exclude_paths" form="audit-form" type="text" placeholder="额外排除的目录，逗号分隔" autocomplete="off" spellcheck="false" maxlength="2000">
               <label class="check-row"><input id="auto-exclude" type="checkbox" checked><span>智能排除测试与生成目录</span></label>
