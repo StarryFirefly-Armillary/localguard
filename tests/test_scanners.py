@@ -293,7 +293,11 @@ class BoundaryTests(unittest.IsolatedAsyncioTestCase):
             result = await s.run_scanner('gitleaks', FIXTURES, binaries={'gitleaks': str(FIXTURES / 'vulnerable.py')})
             self.assertEqual(result['status'], 'error')
             if os.name == 'nt':
-                result = await s.run_scanner('semgrep', FIXTURES, binaries={'semgrep': str(ROOT / 'whatineed.md')})
+                # Use a tracked, non-.exe file that exists in every checkout.
+                # A previously-used local-only file (whatineed.md) made this
+                # test pass locally but fail in CI where that file is absent
+                # (resolve(strict=True) -> 'unavailable' instead of 'error').
+                result = await s.run_scanner('semgrep', FIXTURES, binaries={'semgrep': str(ROOT / 'README.md')})
                 self.assertEqual(result['status'], 'error')
             mocked.assert_not_called()
 
