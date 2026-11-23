@@ -264,3 +264,20 @@ class ExtendedRuleFalsePositiveTests(unittest.TestCase):
         self.assertNotIn("Path($BASE) / $USER_INPUT", patterns)
         self.assertTrue(all("request.$METHOD.get" in p or "request." in p
                             for p in self.all_pattern_strings(rule) if "$FILENAME" in p))
+
+    def test_sha1_rule_excludes_git_blob_object_ids(self):
+        # Reproducing a Git blob id (sha1("blob <size>\0<content>")) is a
+        # format requirement, not weak crypto; these were 2 false positives.
+        rule = self.rule("lg.ext.weak-crypto-sha1")
+        patterns = " ".join(self.all_pattern_strings(rule))
+        self.assertIn("pattern-not-regex", json.dumps(rule["patterns"]))
+        self.assertIn("blob", patterns)
+
+    def test_xxe_rule_requires_request_data_flow(self):
+        # ET.fromstring on local trusted scanner output with an explicit
+        # DOCTYPE/ENTITY guard was a false positive; require request input.
+        rule = self.rule("lg.ext.xxe-xml-etree")
+        patterns = " ".join(self.all_pattern_strings(rule))
+        self.assertNotIn("ET.fromstring($USER_INPUT)", patterns)
+        self.assertTrue(all("request.$M.get" in p
+                            for p in self.all_pattern_strings(rule)))
