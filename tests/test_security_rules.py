@@ -222,3 +222,45 @@ class RealSemgrepSecurityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtendedRuleFalsePositiveTests(unittest.TestCase):
+    """Guard against unconstrained patterns that flood reports with false
+    positives (a bare dict.get() was reported as aiohttp SSRF on this very
+    project, producing 103 bogus HIGH findings and masking real ones)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.extended = json.loads(
+            (ROOT / "localguard" / "rules" / "security-extended.json").read_text(encoding="utf-8"))
+
+    def rule(self, rule_id):
+        return next(r for r in self.extended["rules"] if r["id"] == rule_id)
+
+    def all_pattern_strings(self, rule):
+        out = []
+        def walk(node):
+            if isinstance(node, dict):
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+            elif isinstance(node, str):
+                out.append(node)
+        walk(rule.get("patterns", []))
+        return out
+
+    def test_ssrf_aiohttp_rule_requires_aiohttp_session(self):
+        rule = self.rule("lg.ext.ssrf-aiohttp-user-input")
+        patterns = " ".join(self.all_pattern_strings(rule))
+        self.assertIn("aiohttp.ClientSession", patterns)
+        self.assertNotIn("$SESSION.get($USER_INPUT, ...)", patterns)
+        self.assertNotIn("$SESSION.post($USER_INPUT, ...)", patterns)
+
+    def test_pathlib_rule_requires_request_data_flow(self):
+        rule = self.rule("lg.ext.path-traversal-pathlib")
+        patterns = " ".join(self.all_pattern_strings(rule))
+        self.assertNotIn("Path($BASE) / $USER_INPUT", patterns)
+        self.assertTrue(all("request.$METHOD.get" in p or "request." in p
+                            for p in self.all_pattern_strings(rule) if "$FILENAME" in p))
