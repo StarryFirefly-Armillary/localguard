@@ -281,3 +281,33 @@ class ExtendedRuleFalsePositiveTests(unittest.TestCase):
         self.assertNotIn("ET.fromstring($USER_INPUT)", patterns)
         self.assertTrue(all("request.$M.get" in p
                             for p in self.all_pattern_strings(rule)))
+
+    def test_random_rule_excludes_imagedraw_functions(self):
+        # Visual noise in a CAPTCHA image (draw.point/text/line coordinates
+        # and RGB values) is not a security-sensitive random use; it produced
+        # 9 false positives. Random in the answer/token function still reports.
+        rule = self.rule("lg.ext.weak-crypto-random")
+        blob = json.dumps(rule["patterns"])
+        self.assertIn("pattern-not-inside", blob)
+        self.assertIn("ImageDraw.Draw", " ".join(self.all_pattern_strings(rule)))
+
+    def test_path_traversal_rule_sanitizes_safe_filename(self):
+        # Blog project's safe_filename() does basename + '..' rejection +
+        # realpath prefix check; 3 os.path.join findings were false positives.
+        rule = self.rule("lg.ext.python-request-to-path-traversal")
+        sanitizers = " ".join(self.all_pattern_strings(
+            {"patterns": rule["pattern-sanitizers"]}))
+        self.assertIn("safe_filename", sanitizers)
+
+    def test_sql_format_string_rule_requires_request_taint(self):
+        # Hardcoded migration-loop variables in f-string SQL were a false
+        # positive; the rule must trace a request source into the query.
+        rule = self.rule("lg.ext.django-sql-injection-format-string")
+        self.assertEqual(rule.get("mode"), "taint")
+        sources = " ".join(self.all_pattern_strings(
+            {"patterns": rule["pattern-sources"]}))
+        sinks = " ".join(self.all_pattern_strings(
+            {"patterns": rule["pattern-sinks"]}))
+        self.assertIn("request.", sources)
+        self.assertIn("focus-metavariable", json.dumps(rule["pattern-sinks"]))
+        self.assertIn("execute", sinks)

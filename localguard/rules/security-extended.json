@@ -769,6 +769,9 @@
     },
     {
      "pattern": "get_valid_filename(...)"
+    },
+    {
+     "pattern": "safe_filename(...)"
     }
    ]
   },
@@ -1300,24 +1303,31 @@
     "category": "security",
     "confidence": "MEDIUM"
    },
-   "pattern-either": [
+   "patterns": [
     {
-     "pattern": "random.randint(...)"
+     "pattern-either": [
+      {
+       "pattern": "random.randint(...)"
+      },
+      {
+       "pattern": "random.random()"
+      },
+      {
+       "pattern": "random.choice(...)"
+      },
+      {
+       "pattern": "random.choices(...)"
+      },
+      {
+       "pattern": "random.sample(...)"
+      },
+      {
+       "pattern": "random.shuffle(...)"
+      }
+     ]
     },
     {
-     "pattern": "random.random()"
-    },
-    {
-     "pattern": "random.choice(...)"
-    },
-    {
-     "pattern": "random.choices(...)"
-    },
-    {
-     "pattern": "random.sample(...)"
-    },
-    {
-     "pattern": "random.shuffle(...)"
+     "pattern-not-inside": "def $F(...):\n  ...\n  ImageDraw.Draw(...)\n  ..."
     }
    ]
   },
@@ -2026,25 +2036,53 @@
      "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
     ]
    },
-   "patterns": [
+   "mode": "taint",
+   "pattern-sources": [
     {
-     "pattern-either": [
-      {
-       "pattern": "$CURSOR.execute(f\"...{$USER_INPUT}...\", ...)\n"
-      },
-      {
-       "pattern": "$CURSOR.execute(f\"...{$USER_INPUT}...\")\n"
-      },
-      {
-       "pattern": "$CURSOR.executemany(f\"...{$USER_INPUT}...\", ...)\n"
-      },
-      {
-       "pattern": "$QUERY = f\"...{$USER_INPUT}...\"\n...\n$CURSOR.execute($QUERY, ...)\n"
-      },
-      {
-       "pattern": "$QUERY = f\"...{$USER_INPUT}...\"\n...\n$CURSOR.execute($QUERY)\n"
-      }
-     ]
+     "pattern": "request.GET.get(...)"
+    },
+    {
+     "pattern": "request.POST.get(...)"
+    },
+    {
+     "pattern": "request.GET[...]"
+    },
+    {
+     "pattern": "request.POST[...]"
+    },
+    {
+     "pattern": "request.args.get(...)"
+    },
+    {
+     "pattern": "request.form.get(...)"
+    },
+    {
+     "pattern": "request.$M.get(...)"
+    },
+    {
+     "pattern": "request.$M[...]"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "$C.execute(f\"...{$X}...\", ...)",
+     "focus-metavariable": "$X"
+    },
+    {
+     "pattern": "$C.execute(f\"...{$X}...\")",
+     "focus-metavariable": "$X"
+    },
+    {
+     "pattern": "$C.executemany(f\"...{$X}...\", ...)",
+     "focus-metavariable": "$X"
+    },
+    {
+     "pattern": "$Q = f\"...{$X}...\"\n...\n$C.execute($Q, ...)",
+     "focus-metavariable": "$X"
+    },
+    {
+     "pattern": "$Q = f\"...{$X}...\"\n...\n$C.execute($Q)",
+     "focus-metavariable": "$X"
     }
    ]
   },
