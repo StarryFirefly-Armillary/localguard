@@ -260,6 +260,8 @@
     const args = { target, model_tier: $('model-tier').value,
                    auto_exclude: $('auto-exclude').checked,
                    model_triage: $('model-triage').checked };
+    const maxExp = Number.parseInt($('max-explanations').value, 10);
+    if (Number.isInteger(maxExp) && maxExp >= 0) args.max_explanations = Math.min(500, maxExp);
     const excluded = $('exclude-paths').value.split(',').map((s) => s.trim()).filter(Boolean);
     if (excluded.length) args.exclude_paths = excluded;
     return args;
@@ -626,6 +628,11 @@
       badge.title = text(triage.reason, '');
       top.append(badge);
     }
+    if (issue.ai_explanation === 'skipped_budget') {
+      const badge = node('span', 'badge ai-skipped', '未做 AI 解释');
+      badge.title = '超过 AI 解释条数上限：此发现保留完整确定性证据与定位，但没有 AI 文字解说。证据与严重度不受影响。';
+      top.append(badge);
+    }
     const feedback = issue.feedback;
     if (feedback && (feedback.rule_confirmed || feedback.rule_false_positive)) {
       const fb = node('span', 'badge feedback-badge',
@@ -642,6 +649,7 @@
     card.append(locationList);
     if (issue.stale || locations.some(isStale)) card.append(node('p', 'stale-note', '定位已过期：文件内容可能已变化，请重新审查后确认。'));
     if (issue.explanation) card.append(node('p', 'issue-explanation', text(issue.explanation)));
+    else if (issue.ai_explanation === 'skipped_budget') card.append(node('p', 'issue-explanation muted', '未做 AI 文字解释（超出条数上限）。下方证据链与精确定位完整，可据此人工判断。'));
     const details = node('details', 'issue-details');
     details.open = state.expandedIssues.has(id);
     const evidence = Array.isArray(issue.evidence) ? issue.evidence : [];
