@@ -16,6 +16,7 @@
     ready: false, bootstrapped: false, csrf: '', sessionId: '', mode: 'form',
     submitting: false, chatBusy: false, imageBusy: false, exporting: false,
     audit: null, lastArguments: null, pollEpoch: 0, pollTimer: null,
+    logSince: 0, logPaused: false, logTimer: null, logTails: 0,
     severity: 'all', selectedIssue: '', issueSignature: '', expandedIssues: new Set(),
     reviews: new Map(), reviewPending: new Set(), reviewErrors: new Map(), environmentWarnings: [],
     treeRoot: '', treeEntries: [], treeEpoch: 0, treeBusy: false, collapsedFolders: new Set(),
@@ -407,6 +408,8 @@
     alertIn('audit-error', '');
     alertIn('export-alert', '');
     renderAudit();
+    resetLogs();
+    startLogPolling();
     // Always obtain an authoritative status snapshot, including the server-resolved root.
     if (isActive()) schedulePoll(0);
     else pollAudit(state.pollEpoch);
@@ -454,6 +457,73 @@
       }, '重新获取状态');
       updateControls();
     }
+  }
+
+  // ---- Live audit log console -------------------------------------------
+  function resetLogs() {
+    clearTimeout(state.logTimer);
+    state.logTimer = null;
+    state.logSince = 0;
+    state.logTails = 0;
+    const list = $('log-list');
+    if (list) {
+      list.replaceChildren(node('li', 'log-empty', '等待审查任务，开始后实时显示后台事件。'));
+      $('log-count').textContent = '0 条';
+    }
+  }
+
+  function appendLogs(entries) {
+    const list = $('log-list');
+    if (!list || !entries || !entries.length) return;
+    if (list.querySelector('.log-empty')) list.replaceChildren();
+    const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
+    for (const entry of entries) {
+      if (!Number.isInteger(entry.id) || entry.id <= state.logSince) continue;
+      state.logSince = entry.id;
+      const li = node('li', `log-entry level-${text(entry.level, 'info')}`);
+      const t = new Date(entry.time * 1000);
+      const stamp = Number.isFinite(t.getTime()) ? t.toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--';
+      li.append(node('time', '', stamp), node('span', 'log-msg', text(entry.message, entry.event)));
+      list.append(li);
+    }
+    while (list.children.length > 400) list.removeChild(list.firstChild);
+    $('log-count').textContent = `${list.children.length} 条`;
+    if (atBottom) list.scrollTop = list.scrollHeight;
+  }
+
+  async function pollLogs() {
+    clearTimeout(state.logTimer);
+    state.logTimer = null;
+    if (state.logPaused || !state.ready || !state.audit?.audit_id) return;
+    const auditId = state.audit.audit_id;
+    try {
+      const data = await request(`/api/audits/${encodeURIComponent(auditId)}/logs?since=${state.logSince}&limit=100`);
+      if (state.audit?.audit_id !== auditId || state.logPaused) return;
+      appendLogs(data.logs || []);
+    } catch (error) {
+      // Advisory console: a failed poll must never disturb the audit.
+      $('log-count').title = `日志读取暂停：${readable(error)}`;
+    } finally {
+      // Keep polling while running; after completion drain a few tail polls
+      // so final validation events arrive, then stop.
+      if (state.audit?.audit_id === auditId && !state.logPaused) {
+        if (isActive()) {
+          state.logTails = 0;
+          state.logTimer = setTimeout(() => pollLogs(), 1200);
+        } else if (state.logTails < 3) {
+          // Drain a few tail polls after completion, then stop.
+          state.logTails += 1;
+          state.logTimer = setTimeout(() => pollLogs(), 1200);
+        }
+      }
+    }
+  }
+
+  function startLogPolling() {
+    clearTimeout(state.logTimer);
+    if (state.logPaused || !state.ready || !state.audit?.audit_id) return;
+    state.logTails = 0;
+    state.logTimer = setTimeout(() => pollLogs(), 300);
   }
 
   function issues() { return Array.isArray(state.audit?.issues) ? state.audit.issues.filter((issue) => issue && typeof issue === 'object') : []; }
@@ -713,6 +783,7 @@
       if (state.audit?.audit_id !== auditId) return;
       state.reviews.set(issueId, decision);
       announce(`复核状态已保存：${DECISIONS[decision]}。`);
+      if (state.ready) pollLogs();  // reflect the human_review audit-log entry
     } catch (error) {
       if (state.audit?.audit_id === auditId) state.reviewErrors.set(issueId, `${readable(error)} 可再次点击复核按钮重试。`);
     } finally {
@@ -1230,6 +1301,17 @@
   $('analyze-image').addEventListener('click', analyzeImage);
   $('export-report').addEventListener('click', exportReport);
   $('stop-audit').addEventListener('click', stopAudit);
+  $('log-pause').addEventListener('click', () => {
+    state.logPaused = !state.logPaused;
+    $('log-pause').setAttribute('aria-pressed', String(state.logPaused));
+    $('log-pause').textContent = state.logPaused ? '继续' : '暂停';
+    if (state.logPaused) { clearTimeout(state.logTimer); state.logTimer = null; }
+    else startLogPolling();
+  });
+  $('log-clear').addEventListener('click', () => {
+    $('log-list').replaceChildren(node('li', 'log-empty', '日志已清空；继续显示新事件。'));
+    $('log-count').textContent = '0 条';
+  });
   $('resume-load').addEventListener('click', () => {
     const id = $('resume-select').value;
     if (!id) return;

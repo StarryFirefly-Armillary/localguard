@@ -95,6 +95,82 @@ class Store:
             return {row['path']: dict(row) for row in
                     db.execute('SELECT * FROM reads WHERE session=?', (session,))}
 
+    def recent_logs(self, audit_id, since_id=0, limit=100):
+        """Incremental audit-event log for the UI console.
+
+        Returns entries with id/time/event/message/level, newest-last, so the
+        client can pass the last id as `since_id` and append only new rows.
+        Tool evidence (raw source snippets) is intentionally excluded — the
+        console shows progress/diagnostics, not untrusted source data.
+        """
+        ERROR_EVENTS = {'audit_failed', 'report_rejected', 'location_rejected',
+                        'model_triage_failed', 'warning_explanation_failed',
+                        'baseline_failed'}
+        SILENT_EVENTS = {'tool_evidence'}
+        # UI polling noise: the console should show audit progress, not the
+        # client's own status refreshes.
+        SILENT_TOOLS = {'get_audit_status', 'list_audits', 'view_file',
+                        'list_tree', 'get_ast', 'run_scanner'}
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT id, time, payload FROM logs WHERE id>? "
+                "AND json_extract(payload,'$.audit_id')=? ORDER BY id ASC LIMIT ?",
+                (int(since_id), audit_id, int(limit))).fetchall()
+        entries = []
+        for row in rows:
+            try:
+                data = json.loads(row['payload'])
+            except (TypeError, ValueError):
+                continue
+            event = data.get('event', '')
+            if event in SILENT_EVENTS:
+                continue
+            if event == 'tool_call' and data.get('tool_name') in SILENT_TOOLS:
+                continue
+            message = self._log_message(event, data)
+            if not message:
+                continue
+            level = 'error' if event in ERROR_EVENTS else 'info'
+            if event == 'tool_call' and data.get('validation') not in (None, 'passed'):
+                level = 'warn'
+            if event == 'scanner_completed' and data.get('status') not in (None, 'completed'):
+                level = 'warn'
+            entries.append({'id': row['id'], 'time': row['time'],
+                            'event': event, 'message': message, 'level': level})
+        return entries
+
+    @staticmethod
+    def _log_message(event, data):
+        if event == 'scanner_completed':
+            status = data.get('status', '')
+            suffix = '' if status == 'completed' else f' · {status}（覆盖不可用，非扫描通过）'
+            return f"扫描器 {data.get('scanner', '')} 完成：{data.get('findings', 0)} 条发现 · 进度 {data.get('progress', 0)}%{suffix}"
+        if event == 'tool_call':
+            name = data.get('tool_name', 'tool')
+            validation = data.get('validation', '')
+            return f'调用工具 {name}' + (f' · {validation}' if validation else '')
+        if event == 'location_validated':
+            return '发现位置已通过校验' if data.get('validation') == 'passed' else '发现位置校验未通过'
+        if event == 'location_rejected':
+            return f'拒绝不可信定位：{str(data.get("reason", ""))[:200]}'
+        if event == 'model_explanations':
+            return f'AI 解释完成 {data.get("count", 0)} 条（{data.get("tier", "")}）'
+        if event == 'model_triage':
+            return f'模型分诊已记录 {len(data.get("verdicts", []))} 条判断'
+        if event == 'model_triage_failed':
+            return f'模型分诊失败，保留确定性发现：{str(data.get("reason", ""))[:160]}'
+        if event == 'warning_explanation_failed':
+            return f'覆盖提示翻译失败，保留原文：{str(data.get("reason", ""))[:160]}'
+        if event == 'baseline_failed':
+            return f'基线对比跳过：{str(data.get("reason", ""))[:160]}'
+        if event == 'report_rejected':
+            return f'报告校验失败：{str(data.get("error", ""))[:200]}'
+        if event == 'audit_failed':
+            return f'审查失败：{str(data.get("error", ""))[:200]}'
+        if event == 'human_review':
+            return f'人工复核：{data.get("decision", "")}'
+        return event
+
     def enqueue(self, session, args):
         audit_id = uuid.uuid4().hex
         result = {'audit_id':audit_id,'status':'queued','queue_position':0,'progress':0,'completed_modules':[],

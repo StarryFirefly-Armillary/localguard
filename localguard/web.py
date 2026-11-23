@@ -122,6 +122,12 @@ def create_app(config: Config | None = None):
         # suppressed by these numbers; they only inform the user.
         return registry.store.triage_accuracy()
 
+    @app.get('/api/audits/{audit_id}/logs')
+    async def audit_logs(audit_id: str, request: Request, since: int = 0, limit: int = 100):
+        # Ownership check: an audit's logs are visible only to its session.
+        registry.store.get(audit_id, session(request))
+        return {'logs': registry.store.recent_logs(audit_id, since, min(max(limit, 1), 500))}
+
     @app.get('/api/audits/{audit_id}/export')
     async def export(audit_id: str, request: Request, format: str='json'):
         sid = session(request)

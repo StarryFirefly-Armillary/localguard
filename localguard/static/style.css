@@ -132,6 +132,23 @@ summary:hover { color: var(--text); }
 .allowed-roots li { padding: 4px 0; overflow-wrap: anywhere; }
 .sidebar-footnote { display: none; }
 
+/* ---- Live audit log console (stays in flow, moves down when menus open) ---- */
+.log-console { border-top: 1px solid var(--line-soft); margin-top: 22px; padding-top: 14px; }
+.log-console-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.log-console-head h2 { font-size: 12px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 8px; }
+.log-console-actions { display: flex; gap: 10px; }
+.log-console-actions .text-button { font-size: 10px; }
+.log-console-actions .text-button[aria-pressed="true"] { color: var(--text); text-decoration: underline; }
+.log-list { list-style: none; margin: 10px 0 0; padding: 8px 10px; height: 210px; overflow-y: auto; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); font-family: Consolas, 'Courier New', monospace; font-size: 10px; line-height: 1.55; }
+.log-list .log-empty { color: var(--subtle); font-family: inherit; }
+.log-entry { display: flex; gap: 8px; padding: 2px 0; border-bottom: 1px solid var(--line-soft); overflow-wrap: anywhere; }
+.log-entry:last-child { border-bottom: 0; }
+.log-entry time { color: var(--subtle); flex: none; font-variant-numeric: tabular-nums; }
+.log-entry .log-msg { flex: 1; min-width: 0; color: var(--muted); }
+.log-entry.level-error .log-msg { color: var(--red); }
+.log-entry.level-warn .log-msg { color: var(--amber); }
+.log-entry.level-info .log-msg { color: var(--text); }
+
 .main-content { padding: 30px 32px 20px; min-width: 0; }
 .workspace-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; margin-bottom: 22px; }
 .heading-dot { display: none; }
