@@ -870,7 +870,7 @@
           if (collapsed) state.collapsedFolders.delete(path); else state.collapsedFolders.add(path);
           renderTree();
           [...$('file-tree').querySelectorAll('button')].find((element) => element.dataset.path === path)?.focus({ preventScroll: true });
-        } else openFile(path, 1);
+        } else openFile(path);  // browse without marking line 1 as a location
       });
       item.append(button);
       list.append(item);
@@ -895,15 +895,18 @@
     alertIn('preview-alert', '');
   }
 
-  async function openFile(path, targetLine = 1, location = null, pageStart = null) {
+  async function openFile(path, targetLine = null, location = null, pageStart = null) {
     const resolved = resolvePath(state.audit?.root, path);
-    if (!resolved || !Number.isInteger(targetLine) || targetLine < 1) {
+    // targetLine=null means plain file browsing (e.g. from the tree): no line
+    // is a "location" and nothing should be highlighted. Only deep links and
+    // explicit jump-to-line pass a real line number.
+    if (!resolved || (targetLine !== null && (!Number.isInteger(targetLine) || targetLine < 1))) {
       alertIn('preview-alert', '文件定位无效，或目标不在当前审查根目录内。');
       return;
     }
     if (!state.ready) { alertIn('preview-alert', '本地会话未就绪，请重新连接后打开文件。', bootstrap, '重新连接'); return; }
     const epoch = ++state.previewEpoch;
-    const start = pageStart === null ? Math.max(1, targetLine - 40) : Math.max(1, pageStart);
+    const start = pageStart === null ? Math.max(1, (targetLine ?? 1) - 40) : Math.max(1, pageStart);
     state.previewBusy = true;
     $('code-preview').setAttribute('aria-busy', 'true');
     $('file-path').textContent = relativePath(resolved);
@@ -1000,7 +1003,7 @@
     $('code-preview').replaceChildren(container.children.length ? container : node('p', 'tree-placeholder', data.total_lines ? '此范围没有返回代码，请调整行号或重新读取。' : '这是一个空文件。'));
     $('code-preview').scrollTop = 0;
     $('code-preview').scrollLeft = 0;
-    if (!pagination && data.total_lines > 0 && !target) alertIn('preview-alert', '目标行未出现在返回片段中，定位可能已经失效。请重新审查或手动选择行号。');
+    if (targetLine !== null && !pagination && data.total_lines > 0 && !target) alertIn('preview-alert', '目标行未出现在返回片段中，定位可能已经失效。请重新审查或手动选择行号。');
     // The requested slice is rendered before any scroll/focus operation.
     const epoch = state.previewEpoch;
     requestAnimationFrame(() => {
