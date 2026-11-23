@@ -19,6 +19,10 @@ class Config:
     max_files: int = 10_000
     max_prompt_files: int = 60
     max_prompt_chars: int = 24_000
+    # Only the top-N highest-risk findings get an AI-written explanation;
+    # the rest keep their full deterministic evidence chain but no prose.
+    # 0 = explain all. Bounding this keeps audit time predictable on 4-8GB.
+    max_model_explanations: int = 40
     model_tier: str = '8gb'
     keep_model_resident: bool = False
     model_endpoint: str = 'http://127.0.0.1:1234/v1'
@@ -58,6 +62,8 @@ class Config:
             raise ValueError('max_output_bytes must be between 4096 and 200000')
         if not 1 <= self.max_prompt_files <= 60:
             raise ValueError('max_prompt_files must be between 1 and 60')
+        if not 0 <= self.max_model_explanations <= 500:
+            raise ValueError('max_model_explanations must be between 0 and 500 (0 = explain all)')
         if self.model_tier not in ('rules', '4gb', '8gb'):
             raise ValueError('Invalid model_tier')
 
