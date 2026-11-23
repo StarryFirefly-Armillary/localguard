@@ -110,6 +110,8 @@ view_file(path=<abs>, start_line, end_line)   # 深链/证据核对
 
 模型只生成解释与编排，不产生被信任的行号；解释失败时保留确定性发现并给出警告。
 
+**AI 解释条数上限**（`max_model_explanations`，默认 40；UI 高级设置或 `audit_repository` 的 `max_explanations` 可覆盖，0 = 全部）：按风险高低只为前 N 条发现生成 AI 文字解释，其余发现**完整保留** severity、locations、evidence 与人工复核入口，仅标记 `ai_explanation: skipped_budget`、UI 显示「未做 AI 解释」徽章。实测同一审查（133 条发现）：全量解释约 256 秒，上限 40 条约 99 秒，提速约 60%——这是在不删任何发现、不改召回（62.5% 不变）前提下的主要提速手段。
+
 ### 没有模型文件怎么办？
 
 **什么都不用做，核心功能完整可用。** 本仓库不包含也不要求任何模型文件。请直接使用默认的 `model_tier: "rules"`：
