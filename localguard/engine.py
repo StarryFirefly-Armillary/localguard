@@ -385,8 +385,11 @@ class AuditEngine:
                 comparison = compare_baseline(result['issues'], baseline)
                 if comparison:
                     result['baseline'] = comparison
-            except Exception:
-                pass
+            except Exception as exc:
+                # Advisory feature: never fail an audit, but do not hide a
+                # broken baseline either (past bug went unnoticed this way).
+                self.store.log(event='baseline_failed', audit_id=job['id'],
+                               session=session, reason=f'{type(exc).__name__}: {str(exc)[:300]}')
             result['completed_modules'].append('locations_validation')
             result.update(status='completed',progress=100)
         except asyncio.CancelledError:
@@ -399,6 +402,17 @@ class AuditEngine:
             try:
                 await self.registry.publish_report(job['id'], result, session, root, hashes)
             except (ValueError, OSError) as exc:
-                result.update(status='failed', issues=[], error='Report validation failed: ' + str(exc)[:1000])
-                self.store.log(event='report_rejected', audit_id=job['id'], session=session, validation='rejected', error=result['error'])
+                # Never destroy verified findings because the final gate failed.
+                # result['issues'] at this point already passed per-finding
+                # validator.validate + view_file checks in the pipeline; keep
+                # them visible with an explicit failure reason so the user can
+                # see what happened and rerun. No *unverified* issue is written.
+                retained = len(result.get('issues', []))
+                result.update(status='failed', error='Report validation failed: ' + str(exc)[:1000])
+                result['warnings'] = list(dict.fromkeys([
+                    *result.get('warnings', []),
+                    f'最终校验未完成；已保留 {retained} 条通过逐项校验的发现，请按提示重审以刷新证据。',
+                ]))
+                self.store.log(event='report_rejected', audit_id=job['id'], session=session,
+                               validation='rejected', error=result['error'], retained_issues=retained)
                 self.store.update(job['id'], result)

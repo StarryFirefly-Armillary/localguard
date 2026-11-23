@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -63,7 +64,14 @@ def semgrep_executable():
         if not binary.is_absolute() or not binary.is_file():
             raise AssertionError("LOCALGUARD_SEMGREP_TEST_EXE must name an existing absolute executable")
         return binary
-    candidates = (ROOT / ".venv" / "Scripts" / "semgrep.exe", ROOT / ".venv" / "bin" / "semgrep")
+    # Resolve the scanner relative to the interpreter running the tests, not a
+    # hard-coded ROOT/.venv path. A project move (or running the suite from a
+    # different venv) otherwise breaks the console-script launcher embedded
+    # shebang, which silently exits 1. sys.executable's Scripts/bin directory
+    # is always the matching one.
+    scripts = Path(sys.executable).resolve().parent
+    candidates = (scripts / "semgrep.exe", scripts / "semgrep",
+                  ROOT / ".venv" / "Scripts" / "semgrep.exe", ROOT / ".venv" / "bin" / "semgrep")
     return next((path for path in candidates if path.is_file()), None)
 
 

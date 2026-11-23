@@ -16,6 +16,11 @@ import tomllib
 import xml.etree.ElementTree as ET
 
 from .lines import text_lines
+from .reporting import SEVERITIES as _SEVERITY_RANK
+
+# Single source of truth: derive the ordered tuple from reporting's rank map
+# so severity ordering cannot drift between the scanner and report layers.
+SEVERITIES = tuple(sorted(_SEVERITY_RANK, key=_SEVERITY_RANK.get))
 
 SCANNERS = ('patterns', 'semgrep', 'gitleaks', 'gosec', 'cppcheck', 'pip-audit', 'grype')
 RULESETS = ('default', 'security', 'backdoor')
@@ -35,7 +40,6 @@ SOURCE_EXTENSIONS = frozenset('''
 '''.split())
 SKIP_DIRS = frozenset({'.git', '.hg', '.svn', '.venv', 'venv', 'node_modules',
                        '__pycache__', 'target', 'vendor', 'dist', 'build'})
-SEVERITIES = ('critical', 'high', 'medium', 'low', 'info')
 CATEGORIES = frozenset({'credential_leak', 'injection', 'backdoor',
                         'dependency_cve', 'misconfig', 'other'})
 PIN = re.compile(r'^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[A-Za-z0-9_,.-]+\])?==([A-Za-z0-9][A-Za-z0-9.!+_-]*)\s*(?:#.*)?$')
@@ -43,7 +47,7 @@ PIN = re.compile(r'^([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\[[A-Za-z0-9_,.-]+\])?==([A-Z
 
 def _result(scanner: str) -> dict:
     return dict(scanner=scanner, status='completed', findings=[], raw=None,
-                warnings=[], truncated=False)
+                warnings=[], truncated=False, dropped_count=0)
 
 
 def _warn(result: dict, message: str) -> None:
@@ -66,8 +70,10 @@ def _finish(result: dict) -> dict:
         before = len(result['findings'])
         while result['findings'] and size() > MAX_RESULT_BYTES:
             result['findings'].pop()
-        if len(result['findings']) < before:
-            _warn(result, 'Structured result exceeded the output limit; findings were omitted.')
+        dropped = before - len(result['findings'])
+        if dropped:
+            result['dropped_count'] = result.get('dropped_count', 0) + dropped
+            _warn(result, f'Structured result exceeded the output limit; {dropped} finding(s) were omitted.')
         if size() > MAX_RESULT_BYTES:
             result['raw'] = None
             _warn(result, 'Raw output omitted because its JSON representation exceeded the limit.')

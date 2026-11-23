@@ -1,5 +1,7 @@
 from copy import deepcopy
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 
@@ -110,5 +112,57 @@ async def test_every_nonempty_pipeline_write_passes_the_shared_gate_again(tmp_pa
         assert result['status'] == 'completed', result
         assert nonempty_writes
         assert {loc['line'] for issue in result['issues'] for loc in issue['locations']} == {17, 650}
+    finally:
+        await registry.close()
+
+
+@pytest.mark.anyio
+async def test_single_invalid_location_is_dropped_without_losing_valid_findings(tmp_path):
+    """A finding with no snapshot evidence is dropped with a logged negative
+    sample and a visible warning; every other verified finding survives."""
+    root = tmp_path/'repo'
+    root.mkdir()
+    source = root/'requirements.txt'
+    source.write_text('first\nsecond\nthird\nrequests==2.19.1\n')
+    registry = ToolRegistry(Config(allowed_roots=[root], data_dir=tmp_path/'state', model_tier='rules'))
+    queued = registry.store.enqueue('s', {'target':str(root)})
+    _, _, digest = registry.policy.read(str(source))
+    good = dependency('GHSA-good-0001')
+    bad = dependency('GHSA-bad-0002')
+    bad['locations'] = [{'path':'unknown.txt', 'line':1, 'snippet_hash':good['locations'][0]['snippet_hash']}]
+    result = {**queued, 'issues':[good, bad], 'status':'completed'}
+    await registry.publish_report(queued['audit_id'], result, 's', root, {'requirements.txt':digest})
+    stored = registry.store.get(queued['audit_id'], 's')
+    assert len(stored['issues']) == 1
+    assert stored['issues'][0]['id'] == good['id']
+    assert any('Dropped' in warning for warning in stored.get('warnings', []))
+    with registry.store.connect() as db:
+        logs = [json.loads(row[0]) for row in db.execute('SELECT payload FROM logs')]
+    assert any(log.get('event') == 'location_rejected' and log.get('validation') == 'rejected' for log in logs)
+    await registry.close()
+
+
+@pytest.mark.anyio
+async def test_final_gate_failure_keeps_verified_findings_visible(tmp_path, monkeypatch):
+    """When the final gate raises after findings were verified in the pipeline,
+    the audit is marked failed but verified findings are NOT wiped to []."""
+    root = tmp_path/'repo'
+    root.mkdir()
+    fixtures = Path(__file__).resolve().parents[1]/'fixtures'
+    for file in fixtures.glob('vulnerable.*'):
+        shutil.copyfile(file, root/file.name)
+    registry = ToolRegistry(Config(allowed_roots=[root], data_dir=tmp_path/'state', model_tier='rules'))
+    queued = registry.store.enqueue('s', {'target':str(root), 'scanners':['patterns'], 'include_dependencies':False, 'model_tier':'rules'})
+
+    async def failing_gate(*args, **kwargs):
+        raise EvidenceError('simulated final validation failure')
+
+    monkeypatch.setattr(registry, 'publish_report', failing_gate)
+    try:
+        await registry.engine.execute(registry.store.claim())
+        stored = registry.store.get(queued['audit_id'], 's')
+        assert stored['status'] == 'failed'
+        assert stored['issues'], 'verified findings were destroyed by a final gate failure'
+        assert any('保留' in warning for warning in stored.get('warnings', [])), stored.get('warnings')
     finally:
         await registry.close()

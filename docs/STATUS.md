@@ -126,7 +126,7 @@ GGUF 转换用的是 b12568 工具链（含 `llama-quantize.exe`），与运行�
 ### 已知限制（如实标注）
 
 - gosec/cppcheck/pip-audit 离线不可用（无包数据/非对应语言）。
-- grype 现可正常运行（completed），但对目录源产生 ~700 条间接依赖匹配，超过 200KB 结构化上限后被整体省略 → 依赖 CVE 检测当前无有效输出。根因是扫整目录而非仅 manifest；修复需重构扫描目标构造，本轮未做。
+- grype 依赖审计已修复（自迭代第一批）：不再对目录源全量扫描，改为从 requirements*.txt 收集精确 pin，写入临时 requirements.txt 后 --requirement 扫描；_manifest_lines 把 CVE 定位到 manifest 中精确的包/版本行，无法精确定位的匹配明确警告并丢弃。raw 精简为索引避免 200KB 上限截断。端到端产出依赖 CVE，coverage 为 completed。
 - 污点流类漏洞的完整数据流（IDOR/Mass Assignment 等）仍依赖高质量规则；规则包已覆盖大部分，但没有 CodeQL/Pysa 级语义分析，不宣称全备。
 
 ## 许可合规修正（2026-11-21 上午）

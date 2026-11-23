@@ -89,22 +89,3 @@ def is_test_root(root: Path) -> bool:
     """
     parts = [p.lower() for p in Path(root).resolve().parts]
     return any(p in TEST_DIRS for p in parts[-3:])
-
-
-def scan(root: Path, paths, **kwargs):
-    """Split paths into (included, excluded) with reasons.
-
-    ``paths`` is any iterable of Path objects below ``root``. Keeps the
-    original order. Excluded entries are (path, reason) pairs.
-    """
-    included, excluded = [], []
-    for path in paths:
-        try:
-            reason = classify(path, root, **kwargs)
-        except (ValueError, OSError):
-            reason = None
-        if reason:
-            excluded.append((path, reason))
-        else:
-            included.append(path)
-    return included, excluded

@@ -277,32 +277,55 @@ class ToolRegistry:
         return result
 
     async def publish_report(self, audit_id, result, session, root, snapshot_hashes):
-        def reject(issue, reason, validation='rejected'):
+        """Final location gate. Two failure classes are handled differently:
+
+        - A single issue with an invalid location (no snapshot evidence, range
+          too wide, unreadable file) is dropped with a logged negative sample
+          and a visible warning; every other verified finding is preserved.
+          This honours the "never silently delete findings" contract: the bad
+          finding is accounted for, valid ones survive.
+        - A stale snapshot (source changed after scanning) invalidates the
+          whole evidence basis and still raises EvidenceError, so callers can
+          mark the audit failed. No *unverified* issue is ever written back.
+        """
+        def drop(issue, reason, validation='rejected'):
             self.store.log(event='location_rejected', session=session, audit_id=audit_id,
                            validation=validation, reason=reason, negative_sample=issue)
-            raise EvidenceError(reason)
+            return reason
 
         validated = []
+        rejected = []
         checked_paths = set()
         for issue in rank(result['issues']):
             ranges = {}
+            reason = None
             for location in issue['locations']:
                 relative = safe_relative(location['path']).as_posix()
                 if relative not in snapshot_hashes:
-                    reject(issue, 'Location has no scanner snapshot evidence')
+                    reason = drop(issue, 'Location has no scanner snapshot evidence')
+                    break
                 ranges.setdefault(relative, []).append(location['line'])
-            for relative, lines in ranges.items():
-                if max(lines) - min(lines) >= 400:
-                    reject(issue, 'Locations in one file exceed the readable range; split them into separate issues')
-                read = await self.call('view_file', {'path':str(root / relative), 'start_line':min(lines), 'end_line':max(lines)}, session, 'report-gate')
-                if read['isError']:
-                    reject(issue, read['error'])
-                if read['data']['hash'] != snapshot_hashes[relative]:
-                    for location in issue['locations']:
-                        if location['path'] == relative:
-                            location['stale'] = True
-                    reject(issue, 'Source changed after scanning; rerun the audit: ' + relative, 'stale')
-                checked_paths.add(relative)
+            if reason is None:
+                for relative, lines in ranges.items():
+                    if max(lines) - min(lines) >= 400:
+                        reason = drop(issue, 'Locations in one file exceed the readable range; split them into separate issues')
+                        break
+                    read = await self.call('view_file', {'path':str(root / relative), 'start_line':min(lines), 'end_line':max(lines)}, session, 'report-gate')
+                    if read['isError']:
+                        reason = drop(issue, read['error'])
+                        break
+                    if read['data']['hash'] != snapshot_hashes[relative]:
+                        for location in issue['locations']:
+                            if location['path'] == relative:
+                                location['stale'] = True
+                        self.store.log(event='location_rejected', session=session, audit_id=audit_id,
+                                       validation='stale', reason='Source changed after scanning; rerun the audit: ' + relative,
+                                       negative_sample=issue)
+                        raise EvidenceError('Source changed after scanning; rerun the audit: ' + relative)
+                    checked_paths.add(relative)
+            if reason is not None:
+                rejected.append(f'Dropped {issue.get("id", "issue")}: {reason}')
+                continue
             validated.extend(self.rank_and_report([issue], session, root)['issues'])
         for relative in checked_paths:
             _, _, digest = self.policy.read(str(root / relative))
@@ -311,4 +334,6 @@ class ToolRegistry:
                                validation='stale', reason='Source changed during report validation', path=relative)
                 raise EvidenceError('Source changed during report validation; rerun the audit: ' + relative)
         result['issues'] = validated
+        if rejected:
+            result['warnings'] = list(dict.fromkeys([*result.get('warnings', []), *rejected]))
         self.store.update(audit_id, result)
