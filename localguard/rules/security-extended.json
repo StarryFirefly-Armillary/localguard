@@ -574,7 +574,7 @@
   },
   {
    "id": "lg.ext.path-traversal-pathlib",
-   "message": "Path Traversal: User input used with pathlib without validation. The / operator doesn't prevent ../ traversal.",
+   "message": "Path Traversal: HTTP request data flows into a pathlib path without validation. The / operator does not prevent ../ traversal.",
    "severity": "ERROR",
    "languages": [
     "python"
@@ -589,13 +589,13 @@
     {
      "pattern-either": [
       {
-       "pattern": "Path($BASE) / $USER_INPUT"
-      },
-      {
        "pattern": "$FILENAME = request.$METHOD.get(...)\n...\nPath($BASE) / $FILENAME\n"
       },
       {
        "pattern": "$FILENAME = request.$METHOD.get(...)\n...\n$PATH.joinpath($FILENAME)\n"
+      },
+      {
+       "pattern": "$FILENAME = request.$METHOD.get(...)\n...\nPath($BASE, $FILENAME)\n"
       }
      ]
     }
@@ -3106,7 +3106,7 @@
   },
   {
    "id": "lg.ext.ssrf-aiohttp-user-input",
-   "message": "SSRF vulnerability: User-controlled URL in aiohttp request.",
+   "message": "SSRF vulnerability: user-controlled URL passed to an aiohttp.ClientSession request. Validate against an allowlist.",
    "severity": "ERROR",
    "languages": [
     "python"
@@ -3121,13 +3121,16 @@
     {
      "pattern-either": [
       {
-       "pattern": "$SESSION.get($USER_INPUT, ...)"
+       "pattern": "$SESSION = aiohttp.ClientSession(...)\n...\n$SESSION.get($URL, ...)"
       },
       {
-       "pattern": "$SESSION.post($USER_INPUT, ...)"
+       "pattern": "$SESSION = aiohttp.ClientSession(...)\n...\n$SESSION.post($URL, ...)"
       },
       {
-       "pattern": "aiohttp.ClientSession().get($USER_INPUT)"
+       "pattern": "aiohttp.ClientSession(...).get($URL, ...)"
+      },
+      {
+       "pattern": "aiohttp.ClientSession(...).post($URL, ...)"
       }
      ]
     }
