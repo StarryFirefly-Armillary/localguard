@@ -348,8 +348,20 @@ class AuditEngine:
             tier = args.get('model_tier', self.config.model_tier)
             if result['issues'] and (tier == '8gb' or (tier == '4gb' and self.config.model_4gb_path)):
                 want_triage = args.get('model_triage', True)
+                # Only the top-N highest-risk findings get an AI explanation;
+                # result['issues'] is already severity/confidence sorted by
+                # rank(). The rest keep their full deterministic evidence and
+                # location — no finding is removed and no severity is touched.
+                limit = args.get('max_explanations', self.config.max_model_explanations)
+                if not isinstance(limit, int) or limit < 0:
+                    limit = self.config.max_model_explanations
+                chosen = result['issues'][:limit] if limit else result['issues']
+                chosen_ids = {issue['id'] for issue in chosen}
+                for issue in result['issues']:
+                    if issue['id'] not in chosen_ids:
+                        issue['ai_explanation'] = 'skipped_budget'
                 try:
-                    records = [contexts[issue['id']] for issue in result['issues']]
+                    records = [contexts[issue['id']] for issue in chosen]
                     model = self.registry.get_model()
                     try:
                         explanations = await model.explain_issues(records, tier, triage=want_triage)
@@ -362,8 +374,12 @@ class AuditEngine:
                         want_triage = False
                         explanations = await model.explain_issues(records, tier, triage=False)
                     triage_records = []
-                    for issue in result['issues']:
-                        update = explanations[issue['id']]
+                    for issue in chosen:
+                        update = explanations.get(issue['id'])
+                        if not update:
+                            issue['ai_explanation'] = 'unavailable'
+                            continue
+                        issue['ai_explanation'] = 'done'
                         issue.update(explanation=update['explanation'], remediation=update['remediation'])
                         if want_triage and 'verdict' in update:
                             issue['triage'] = {
@@ -390,11 +406,16 @@ class AuditEngine:
                             SEVERITIES[i['severity']], -i['confidence'],
                             i['locations'][0]['path'], i['locations'][0]['line'], i['id']))
                     result['coverage']['model_explanation'] = 'completed'
+                    result['coverage']['explained_count'] = sum(
+                        1 for i in result['issues'] if i.get('ai_explanation') == 'done')
                     if want_triage:
                         result['coverage']['model_triage'] = 'completed'
                     result['completed_modules'].append('model_explanation')
                 except (ValueError, OSError, RuntimeError) as exc:
+                    for issue in chosen:
+                        issue.setdefault('ai_explanation', 'unavailable')
                     result['coverage']['model_explanation'] = 'unavailable'
+                    result['coverage']['explained_count'] = 0
                     if want_triage:
                         result['coverage']['model_triage'] = 'unavailable'
                     message = 'Model files could not be accessed' if isinstance(exc, OSError) else str(exc)
