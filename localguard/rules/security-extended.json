@@ -1185,6 +1185,9 @@
        "pattern": "Crypto.Hash.SHA1.new(...)"
       }
      ]
+    },
+    {
+     "pattern-not-regex": "hashlib\\.sha1\\(\\s*b[\"']blob\\s+[\"']"
     }
    ]
   },
@@ -3287,19 +3290,16 @@
     {
      "pattern-either": [
       {
-       "pattern": "xml.etree.ElementTree.fromstring($USER_INPUT)"
+       "pattern": "$X = request.$M.get(...)\n...\nET.fromstring($X)"
       },
       {
-       "pattern": "ET.fromstring($USER_INPUT)"
+       "pattern": "$X = request.$M.get(...)\n...\nET.parse($X)"
       },
       {
-       "pattern": "ElementTree.fromstring($USER_INPUT)"
+       "pattern": "$X = request.$M.get(...)\n...\nxml.etree.ElementTree.fromstring($X)"
       },
       {
-       "pattern": "xml.etree.ElementTree.parse($USER_INPUT)"
-      },
-      {
-       "pattern": "ET.parse($USER_INPUT)"
+       "pattern": "$X = request.$M.get(...)\n...\nElementTree.fromstring($X)"
       }
      ]
     }
