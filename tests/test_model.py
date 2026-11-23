@@ -551,3 +551,22 @@ def test_small_tier_selects_configured_path_alias_not_default_4b(setup):
     assert model._select_model({'data': [{'id': 'Qwen3.5-0.8B-Q4_K_M'}]}, '4gb') == 'Qwen3.5-0.8B-Q4_K_M'
     with pytest.raises(ModelUnavailable):
         model._select_model({'data': [{'id': model.config.model_name}]}, '4gb')
+
+
+@run_async
+async def test_warning_translation_drops_null_entry_without_failing_audit(setup, monkeypatch):
+    """A local model occasionally emits a null explanation for one warning.
+    That must not fail the whole (advisory) translation and turn a completed
+    audit into failed; the remaining warnings stay translated."""
+    model, _, _ = setup
+    reply = {'choices': [{'message': {'content': json.dumps({
+        'explanations': [
+            {'id': 'W000', 'explanation': '第一条中文说明'},
+            {'id': 'W001', 'explanation': None},
+            {'id': 'W002', 'text': '第三条中文说明'},
+        ]})}}]}
+    fake_api(model, monkeypatch, [reply])
+    out = await model.explain_warnings(['warning A', 'warning B', 'warning C'], '8gb')
+    assert out['W000'] == '第一条中文说明'
+    assert out['W002'] == '第三条中文说明'
+    assert 'W001' not in out  # dropped; UI keeps the verbatim original
