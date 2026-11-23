@@ -336,6 +336,11 @@ class AuditEngine:
                         result['issues'] = rank(issues)
                         result['completed_modules'].append(scanner)
                         result['progress'] = int(90*(index+1)/len(selected))
+                        # Progress event for the live log console (audit-scoped).
+                        self.store.log(event='scanner_completed', audit_id=job['id'],
+                                       scanner=scanner, status=output['status'],
+                                       findings=len(output.get('findings', [])),
+                                       progress=result['progress'])
                         # Publish progress WITHOUT writing findings: the full
                         # location gate is expensive (per-issue view_file) and
                         # only needs to run once, on the final report in the
