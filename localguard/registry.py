@@ -240,23 +240,24 @@ class ToolRegistry:
             if result.get('target','').startswith('https://') and root.is_relative_to(self.config.data_dir / 'repositories'):
                 if root not in self.policy.roots:
                     self.policy.roots.append(root)
+            # Cache both the line index AND the content digest from a single
+            # read per path. The old code re-read every file a second time just
+            # to get the digest, making each status poll (incl. deep-link
+            # clicks) re-scan all locations twice (~0.8s for 133 issues).
+            read_map = self.store.latest_map(session+':'+args['audit_id'])
             hashes = {}
             for issue in result['issues']:
                 for location in issue['locations']:
                     path = str(root / safe_relative(location['path']))
                     if path not in hashes:
                         try:
-                            _,data,_ = self.policy.read(path)
-                            hashes[path] = source_lines(data)
+                            _,data,digest = self.policy.read(path)
+                            hashes[path] = (source_lines(data), digest)
                         except (OSError,ValueError):
-                            hashes[path] = []
-                    lines = hashes[path]
+                            hashes[path] = ([], None)
+                    lines, current = hashes[path]
                     line = location['line']
-                    read = self.store.latest(session+':'+args['audit_id'],root / safe_relative(location['path']))
-                    try:
-                        _,_,current = self.policy.read(path)
-                    except (OSError,ValueError):
-                        current = None
+                    read = read_map.get(path)
                     location['stale'] = not read or current!=read['hash'] or line>len(lines) or hashlib.sha256(lines[line-1].encode()).hexdigest()!=location['snippet_hash']
             offset,limit = args.get('offset',0),args.get('limit',100)
             result['total_issues'] = len(result['issues'])

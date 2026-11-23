@@ -604,11 +604,17 @@
     button.dataset.focusKey = `location:${issueId}:${text(location.path)}:${line}:${label || ''}`;
     button.addEventListener('click', async () => {
       state.selectedIssue = issueId;
-      if (state.audit?.audit_id) await pollAudit(state.pollEpoch);
+      // Deep-link must feel instant. Only a still-running audit needs a
+      // fresh snapshot; for a completed one state.audit is already current,
+      // and awaiting get_audit_status (which re-checks every location's hash)
+      // delays the file preview by ~0.8s for no benefit.
+      if (isActive() && state.audit?.audit_id) await pollAudit(state.pollEpoch);
       const currentIssue = issues().find((issue) => issue.id === issueId);
       const currentLocation = locationsOf(currentIssue || {}).find((item) => item.path === location.path && item.line === line);
-      renderIssues();
+      // Update selection highlight without blocking preview; openFile issues
+      // its own single view_file call immediately.
       openFile(path, line, currentLocation || location);
+      renderIssues();
     });
     return button;
   }

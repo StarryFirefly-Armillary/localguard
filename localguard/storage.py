@@ -88,6 +88,13 @@ class Store:
             row = db.execute('SELECT * FROM reads WHERE session=? AND path=?', (session,str(path))).fetchone()
             return dict(row) if row else None
 
+    def latest_map(self, session):
+        """All view_file read records for a session in one query. Callers that
+        stale-check many locations avoid opening a SQLite connection per path."""
+        with self.connect() as db:
+            return {row['path']: dict(row) for row in
+                    db.execute('SELECT * FROM reads WHERE session=?', (session,))}
+
     def enqueue(self, session, args):
         audit_id = uuid.uuid4().hex
         result = {'audit_id':audit_id,'status':'queued','queue_position':0,'progress':0,'completed_modules':[],
