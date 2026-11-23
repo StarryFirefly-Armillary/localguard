@@ -175,6 +175,10 @@ class ToolRegistry:
             return {'entries':sorted(entries,key=lambda x:x['path']),'truncated':truncated}
         if name=='run_scanner':
             return await self.engine.scanner(args['scanner'],args['target'],args.get('ruleset','default'))
+        if name=='cancel_audit':
+            return self.engine.cancel(args['audit_id'], session)
+        if name=='list_audits':
+            return {'audits': self.store.recent(session, args.get('limit', 10))}
         if name=='git_diff':
             async with self.store.resource():
                 return await self.engine.diff(args['repo'],args.get('base','HEAD~1'),args.get('head','HEAD'))

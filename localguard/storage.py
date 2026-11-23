@@ -166,6 +166,37 @@ class Store:
             result['issues'] = reorder_by_feedback(result['issues'])
             return result
 
+    def recent(self, session, limit=10):
+        """Lightweight audit summaries for one session, newest first.
+
+        Used by the UI to reconnect to in-flight/recent audits after a page
+        reload. Deliberately excludes full findings — call get()/get_audit_status
+        for the complete, validated report.
+        """
+        with self.connect() as db:
+            rows = db.execute(
+                'SELECT id, state, created, result FROM jobs WHERE session=? ORDER BY created DESC LIMIT ?',
+                (session, int(limit))).fetchall()
+        audits = []
+        for row in rows:
+            try:
+                result = json.loads(row['result'])
+            except (TypeError, ValueError):
+                continue
+            target = result.get('target', '')
+            progress = result.get('progress', 0)
+            if not isinstance(progress, int):
+                progress = 0
+            audits.append({
+                'audit_id': row['id'],
+                'status': row['state'],
+                'target': target if isinstance(target, str) else '',
+                'progress': progress,
+                'issue_count': len(result.get('issues', [])),
+                'created': int(row['created']),
+            })
+        return audits
+
     def review(self, audit_id, session, issue_id, decision):
         result = self.get(audit_id,session)
         if decision not in ('confirmed','false_positive','unreviewed'):

@@ -21,6 +21,7 @@ class AuditEngine:
         self.config = registry.config
         self.store = registry.store
         self.worker = None
+        self.active = {}  # audit_id -> asyncio.Task for the currently running audit(s)
         self.closed = False
 
     def start(self):
@@ -190,9 +191,40 @@ class AuditEngine:
         while not self.closed:
             job = self.store.claim()
             if job:
-                await self.execute(job)
+                audit_id = job['id']
+                task = asyncio.create_task(self.execute(job), name=f'audit-{audit_id}')
+                self.active[audit_id] = task
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    # Cancelling the worker on shutdown propagates here; let
+                    # it bubble up so close() can finish cleanly.
+                    raise
+                finally:
+                    self.active.pop(audit_id, None)
             else:
                 await asyncio.sleep(0.2)
+
+    def cancel(self, audit_id, session):
+        """Request cancellation of a running audit owned by this session.
+
+        Cancelling the task unwinds execute() into its finally block: the
+        per-scanner subprocess (if any) is terminated by _execute's cleanup
+        kill_tree(), and the job is marked cancelled. Returns the job state.
+        """
+        result = self.store.get(audit_id, session)  # session ownership check
+        if result['status'] in ('completed', 'failed', 'cancelled', 'canceled'):
+            return result
+        task = self.active.get(audit_id)
+        if task and not task.done():
+            task.cancel()
+            result.update(status='cancelled', error='Cancelled by user', queue_position=0)
+            self.store.update(audit_id, result)
+        else:
+            # Queued but not yet running: mark it so claim()/execute skip it.
+            result.update(status='cancelled', error='Cancelled by user', queue_position=0)
+            self.store.update(audit_id, result)
+        return result
 
     async def execute(self, job):
         from .scanners import run_scanner
@@ -304,7 +336,14 @@ class AuditEngine:
                         result['issues'] = rank(issues)
                         result['completed_modules'].append(scanner)
                         result['progress'] = int(90*(index+1)/len(selected))
-                        await self.registry.publish_report(job['id'], result, session, root, hashes)
+                        # Publish progress WITHOUT writing findings: the full
+                        # location gate is expensive (per-issue view_file) and
+                        # only needs to run once, on the final report in the
+                        # finally block. Writing issues here would both waste
+                        # ~N full validations and bypass the shared gate.
+                        progress = {k: v for k, v in result.items() if k != 'issues'}
+                        progress['issues'] = []
+                        self.store.update(job['id'], progress)
             result['issues'] = rank(issues)
             tier = args.get('model_tier', self.config.model_tier)
             if result['issues'] and (tier == '8gb' or (tier == '4gb' and self.config.model_4gb_path)):
@@ -393,26 +432,37 @@ class AuditEngine:
             result['completed_modules'].append('locations_validation')
             result.update(status='completed',progress=100)
         except asyncio.CancelledError:
-            result.update(status='failed',error='Audit interrupted during server shutdown')
+            # Distinguish a user-requested cancel (already written as
+            # 'cancelled' by engine.cancel) from a shutdown-driven cancel.
+            current = self.store.get(job['id'])
+            cancelled_by_user = current.get('status') in ('cancelled', 'canceled')
+            if not cancelled_by_user:
+                result.update(status='failed', error='Audit interrupted during server shutdown')
+                self.store.update(job['id'], result)
             raise
         except Exception as exc:
             result.update(status='failed',error=f'{type(exc).__name__}: {str(exc)[:1000]}')
             self.store.log(event='audit_failed',audit_id=job['id'],validation='failed',error=result['error'])
         finally:
-            try:
-                await self.registry.publish_report(job['id'], result, session, root, hashes)
-            except (ValueError, OSError) as exc:
-                # Never destroy verified findings because the final gate failed.
-                # result['issues'] at this point already passed per-finding
-                # validator.validate + view_file checks in the pipeline; keep
-                # them visible with an explicit failure reason so the user can
-                # see what happened and rerun. No *unverified* issue is written.
-                retained = len(result.get('issues', []))
-                result.update(status='failed', error='Report validation failed: ' + str(exc)[:1000])
-                result['warnings'] = list(dict.fromkeys([
-                    *result.get('warnings', []),
-                    f'最终校验未完成；已保留 {retained} 条通过逐项校验的发现，请按提示重审以刷新证据。',
-                ]))
-                self.store.log(event='report_rejected', audit_id=job['id'], session=session,
-                               validation='rejected', error=result['error'], retained_issues=retained)
-                self.store.update(job['id'], result)
+            # A cancelled audit must not run the final gate (no complete
+            # report exists) — leave the 'cancelled' state intact. Do NOT use
+            # `return` here: it would swallow the in-flight CancelledError.
+            current_status = self.store.get(job['id']).get('status')
+            if current_status not in ('cancelled', 'canceled'):
+                try:
+                    await self.registry.publish_report(job['id'], result, session, root, hashes)
+                except (ValueError, OSError) as exc:
+                    # Never destroy verified findings because the final gate failed.
+                    # result['issues'] at this point already passed per-finding
+                    # validator.validate + view_file checks in the pipeline; keep
+                    # them visible with an explicit failure reason so the user can
+                    # see what happened and rerun. No *unverified* issue is written.
+                    retained = len(result.get('issues', []))
+                    result.update(status='failed', error='Report validation failed: ' + str(exc)[:1000])
+                    result['warnings'] = list(dict.fromkeys([
+                        *result.get('warnings', []),
+                        f'最终校验未完成；已保留 {retained} 条通过逐项校验的发现，请按提示重审以刷新证据。',
+                    ]))
+                    self.store.log(event='report_rejected', audit_id=job['id'], session=session,
+                                   validation='rejected', error=result['error'], retained_issues=retained)
+                    self.store.update(job['id'], result)

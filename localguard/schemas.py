@@ -42,7 +42,7 @@ ISSUE = obj({
                     ['rule_confirmed', 'rule_false_positive'])
 }, ['id', 'title', 'severity', 'category', 'cwe', 'confidence', 'locations', 'evidence', 'explanation', 'remediation', 'needs_human_review'])
 STATUS = obj({
-    'audit_id': ID, 'status': string(enum=['queued', 'running', 'completed', 'failed']),
+    'audit_id': ID, 'status': string(enum=['queued', 'running', 'completed', 'failed', 'cancelled']),
     'queue_position': integer(), 'progress': integer(0, 100), 'completed_modules': array(string()),
     'issues': array(ISSUE), 'warnings': array(string()), 'target': string(), 'root': string(),
     'error': string(), 'truncated': BOOL, 'total_issues': integer(), 'next_offset': integer(),
@@ -94,6 +94,16 @@ TOOLS = {
     'get_audit_status': tool(
         'Poll an audit owned by this client session. Example audit_id=32-character lowercase hex returned by audit_repository,wait_seconds=2,offset=0,limit=100. Returns status, queue_position, 0..100 progress, completed modules, coverage warnings and validated issues identical to the UI protocol. wait_seconds is bounded 0..30. Large reports are paginated; truncated=true and next_offset indicate remaining issues. Stale locations are flagged if the source changed since evidence was read.',
         obj({'audit_id':ID,'wait_seconds':integer(0,30),'offset':integer(),'limit':integer(1,200)},['audit_id']),deepcopy(STATUS)),
+    'cancel_audit': tool(
+        'Request cancellation of a running or queued audit owned by this client session. Example audit_id=32-character lowercase hex. Stops the active scanner subprocess and marks the audit cancelled; a completed/failed audit is returned unchanged. Only the owning session can cancel its own audit. Returns the audit status with status=cancelled.',
+        obj({'audit_id': ID}, ['audit_id']), deepcopy(STATUS)),
+    'list_audits': tool(
+        'List the most recent audits owned by this client session, newest first, for reconnecting after a page reload. Example limit=10. Returns lightweight summaries (audit_id, status, target, progress, issue counts) without full findings; call get_audit_status for a specific audit to retrieve validated issues.',
+        obj({'limit': integer(1, 50)}, []),
+        obj({'audits': array(obj({'audit_id': ID, 'status': string(), 'target': string(),
+                                  'progress': integer(), 'issue_count': integer(), 'created': integer(0, 2000000000)},
+                                 ['audit_id', 'status', 'target', 'progress', 'issue_count']), 50)},
+            ['audits'])),
     'clone_repository': tool(
         'Explicitly fetch an allowlisted HTTPS Git repository into a private local directory for auditing. Example url=https://github.com/org/repo. This is the ONLY network action; the audit itself stays offline. The bundled UI requires explicit user confirmation in a dialog; MCP tool calls are non-interactive and rely on the host allowlist, no embedded credentials/query/port/path traversal, --depth 2, no submodules, no hooks, no external diff/conv drivers, and isolation under the private state directory. Accepts only HTTPS and a configured git_hosts hostname. Returns a local absolute path to pass to audit_repository; the path is added to this worker allowlist. Cloning is disabled when no Git binary is configured.',
         obj({'url':string(minLength=1,maxLength=1000,pattern=r'^https://[a-zA-Z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$')},['url']),

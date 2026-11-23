@@ -31,7 +31,7 @@ localguard/            核心包
   parser.py / lines.py  tree-sitter 与 LF 一致的行号索引
   training.py         数据校验、QLoRA、配对评估门控
   rules/              内置扫描规则
-tests/                 370 项测试（含真实 semgrep 回归、MCP、定位、安全边界）
+tests/                 373 项测试（含真实 semgrep 回归、MCP、定位、安全边界）
 scripts/               数据整理、训练、离线打包、验证脚本
 fixtures/              非执行的静态测试样本（含 11 语言漏洞与干净对照）
 ```
@@ -90,7 +90,7 @@ python -m localguard --config localguard.example.json mcp
 }
 ```
 
-`tools/list` 暴露 9 个工具：`view_file`、`list_tree`、`get_ast`、`run_scanner`、`git_diff`、`audit_repository`、`get_audit_status`、`analyze_image`、`clone_repository`（内部 `rank_and_report` 不暴露）。`clone_repository` 是唯一联网工具，仅拉取白名单 HTTPS 仓库到本地；审查本身始终离线。自带 UI 调用时需在弹窗中显式确认；MCP 客户端调用不做交互确认，而是受 host 白名单、禁凭据/端口、禁 submodule/hook、`--depth 2` 与目标目录隔离约束——自动化编排依赖这一非交互行为。描述中包含功能边界、参数示例、返回结构与限制，输入在 schema 层用 enum / pattern 约束，输出遵循严格 schema。
+`tools/list` 暴露 11 个工具：`view_file`、`list_tree`、`get_ast`、`run_scanner`、`git_diff`、`audit_repository`、`get_audit_status`、`cancel_audit`、`list_audits`、`analyze_image`、`clone_repository`（内部 `rank_and_report` 不暴露）。`cancel_audit` 停止正在运行/排队的任务（会终止扫描子进程），`list_audits` 列出本会话最近任务供页面刷新后恢复。`clone_repository` 是唯一联网工具，仅拉取白名单 HTTPS 仓库到本地；审查本身始终离线。自带 UI 调用时需在弹窗中显式确认；MCP 客户端调用不做交互确认，而是受 host 白名单、禁凭据/端口、禁 submodule/hook、`--depth 2` 与目标目录隔离约束——自动化编排依赖这一非交互行为。描述中包含功能边界、参数示例、返回结构与限制，输入在 schema 层用 enum / pattern 约束，输出遵循严格 schema。
 
 典型调用流程：
 
@@ -127,7 +127,7 @@ view_file(path=<abs>, start_line, end_line)   # 深链/证据核对
 
 ## 验证状态
 
-- 测试：`370 passed, 86 subtests`（`pytest -q`）。
+- 测试：`373 passed, 86 subtests`（`pytest -q`）。
 - 真实 MCP 客户端联调：Qoder Desktop 与另一 MCP 客户端均完成 `tools/list` 发现、`audit_repository` → `get_audit_status` 轮询、拿到与 UI 一致的结构化 issue（见发布包内的验证记录）。
 - 离线安装与审查：在离线环境用打包 wheel + 本地 wheels 安装后完成审查（见 `dist/offline/`）。
 - 阶段 5 进展：一个正负平衡的 QLoRA adapter 已训练并通过配对评估门控（FPR 0.4→0.2、AUC 0.7→0.85，各项无退化），已合并并量化为运行时 Q4_K_M GGUF，产品配置已指向该微调模型。确定性扫描器 + 校验层仍是可信来源，模型解释是可选增强。详见 `docs/STATUS.md`。

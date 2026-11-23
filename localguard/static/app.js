@@ -134,6 +134,10 @@
     const busy = state.submitting || state.chatBusy || state.imageBusy;
     $('start-audit').disabled = !state.ready || busy || isActive();
     $('start-audit-label').textContent = !state.ready ? '等待本地服务连接' : state.submitting ? '正在提交…' : isActive() ? '审查进行中…' : state.audit ? '开始新的审查' : '开始安全审查';
+    const stop = $('stop-audit');
+    stop.hidden = !isActive();
+    stop.disabled = !state.ready || state.stopping;
+    stop.textContent = state.stopping ? '停止中…' : '停止审查';
     $('send-chat').disabled = !state.ready || busy || isActive();
     $('send-chat').textContent = state.chatBusy ? '本地助手处理中…' : '发送给本地助手';
     $('chat-busy-note').hidden = !isActive();
@@ -226,6 +230,8 @@
       }).catch(() => {});
       renderCoverage();
       if (isActive()) schedulePoll(0);
+      // Reconnect to recent/in-flight audits after a reload (best-effort).
+      loadRecentAudits({ autoResume: true });
       announce('本地服务已连接，可以开始审查。');
     } catch (error) {
       state.ready = false;
@@ -322,6 +328,60 @@
   }
 
   function stopPolling() { clearTimeout(state.pollTimer); state.pollTimer = null; state.pollEpoch += 1; }
+
+  async function stopAudit() {
+    const auditId = state.audit?.audit_id;
+    if (!auditId || !isActive() || !state.ready || state.stopping) return;
+    state.stopping = true;
+    updateControls();
+    try {
+      const data = await tool('cancel_audit', { audit_id: auditId }, 20000);
+      state.audit = { ...state.audit, ...data, audit_id: auditId };
+      alertIn('poll-alert', '');
+      renderAudit();
+      announce('已请求停止审查。');
+    } catch (error) {
+      alertIn('poll-alert', `停止请求失败：${readable(error)}`, () => stopAudit(), '重试停止');
+    } finally {
+      state.stopping = false;
+      updateControls();
+      if (state.audit?.audit_id) pollAudit(state.pollEpoch);
+    }
+  }
+
+  function renderRecentAudits(audits) {
+    const select = $('resume-select');
+    const rows = Array.isArray(audits) ? audits : [];
+    select.replaceChildren(...rows.map((item) => {
+      const option = document.createElement('option');
+      option.value = text(item.audit_id);
+      const label = text(item.status, '任务');
+      const target = text(item.target, '').split(/[\\/]/).pop() || '目标';
+      option.textContent = `${label} · ${target} · ${text(item.audit_id).slice(0, 8)}`;
+      return option;
+    }));
+    $('resume-row').hidden = rows.length === 0;
+  }
+
+  async function loadRecentAudits({ autoResume = true } = {}) {
+    if (!state.ready) return;
+    try {
+      const data = await tool('list_audits', { limit: 20 }, 20000);
+      const audits = data.audits || [];
+      renderRecentAudits(audits);
+      // After a page reload the in-memory state.audit is null. Auto-restore
+      // the most recent in-flight audit so its progress stays visible.
+      if (autoResume && !state.audit && audits.length) {
+        const active = audits.find((a) => !TERMINAL.has(String(a.status || '').toLowerCase())) || audits[0];
+        if (active?.audit_id) {
+          adoptAudit({ audit_id: active.audit_id, status: active.status, target: active.target });
+        }
+      }
+    } catch (error) {
+      // Non-fatal: reconnecting to history is best-effort.
+      $('resume-row').hidden = true;
+    }
+  }
 
   function adoptAudit(data, args = null) {
     stopPolling();
@@ -1155,6 +1215,13 @@
   $('remove-image').addEventListener('click', clearImage);
   $('analyze-image').addEventListener('click', analyzeImage);
   $('export-report').addEventListener('click', exportReport);
+  $('stop-audit').addEventListener('click', stopAudit);
+  $('resume-load').addEventListener('click', () => {
+    const id = $('resume-select').value;
+    if (!id) return;
+    adoptAudit({ audit_id: id, status: 'queued' });
+    if (state.ready) pollAudit(state.pollEpoch);
+  });
 
   // ---- Sliding indicator for grouped buttons --------------------------------
   // The pill is absolutely positioned (out of flow) so moving it never
