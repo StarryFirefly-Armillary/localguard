@@ -133,6 +133,7 @@ class LocalModel:
         self.config, self.store = config, store
         self._process = None
         self._process_key = None
+        self._models_cache = {}
         self._lock = asyncio.Lock()
         self._closed = False
         self.format_success = 0
@@ -222,6 +223,11 @@ class LocalModel:
             self._process_key = None
 
     async def _cleanup(self):
+        # Only invalidate the model list when an owned process is actually
+        # being stopped: with a user-managed endpoint no backend changes, so
+        # keeping the cached response across audits saves another round-trip.
+        if self._process is not None:
+            self._models_cache.clear()
         task = asyncio.create_task(self._stop_owned())
         try:
             await asyncio.shield(task)
@@ -233,8 +239,18 @@ class LocalModel:
         key = (endpoint, tier, vision)
         if self._process is not None and self._process_key != key:
             await self._cleanup()
+        # GET /models costs ~170ms here and the model list is stable for the
+        # lifetime of an endpoint. explain_issues issues one _infer per batch,
+        # so caching removes one redundant round-trip per batch (~1.7s on a
+        # 10-batch audit). Invalidate whenever an owned process is (re)started
+        # or the model is closed, so a different backend can never be reused.
+        cached = self._models_cache.get(key)
+        if cached is not None:
+            return cached
         try:
-            return await self._request(endpoint, 'GET', '/models')
+            models = await self._request(endpoint, 'GET', '/models')
+            self._models_cache[key] = models
+            return models
         except EndpointUnavailable:
             if self._process is not None:
                 raise
@@ -254,6 +270,7 @@ class LocalModel:
             self._process = await launch
             raise
         self._process_key = key
+        self._models_cache.clear()  # backend just changed to an owned process
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if self._process.returncode is not None:
@@ -780,4 +797,5 @@ class LocalModel:
     async def close(self):
         async with self._lock:
             self._closed = True
+            self._models_cache.clear()
             await self._cleanup()

@@ -637,3 +637,42 @@ async def test_triage_uses_larger_token_budget(setup, monkeypatch):
     monkeypatch.setattr(model, '_request', request)
     await model.explain_issues(records, '8gb', triage=True)
     assert any(p.get('max_tokens') == 2048 for p in sent)
+
+
+@run_async
+async def test_model_list_is_cached_across_batches_and_audits(setup, monkeypatch):
+    """GET /models costs ~170ms and the list is stable; a 10-batch audit
+    should query it once, not once per batch (nor once per audit)."""
+    model, _, _ = setup
+    fake_api(model, monkeypatch, [])
+    calls = []
+    orig = model._request
+    async def counted(endpoint, method, route, payload=None):
+        if route == '/models':
+            calls.append(route)
+            return {'data': [{'id': 'Qwen3.5-4B-Q4_K_M'}]}
+        content = json.dumps({'explanations': [{'id': 'I-1', 'explanation': 'x', 'remediation': 'y'}]})
+        return {'choices': [{'message': {'content': content}}]}
+    monkeypatch.setattr(model, '_request', counted)
+    rec = {'id': 'I-1', 'title': 't', 'severity': 'high', 'category': 'injection',
+           'cwe': '', 'language': 'python', 'origin_hint': 'a.py',
+           'source': [{'line': 1, 'text': 'x=1'}]}
+    for _ in range(2):
+        out = await model.explain_issues([rec, dict(rec, id='I-2'), dict(rec, id='I-3'), dict(rec, id='I-4')],
+                                         '8gb', triage=False)
+    assert len(calls) == 1, f'expected one /models query across 2 audits, got {len(calls)}'
+
+
+@run_async
+async def test_model_list_cache_invalidated_when_owned_process_changes(setup):
+    """A cached list from an old backend must not leak after an owned process
+    is stopped; _cleanup clears it only when a process actually existed."""
+    model, _, _ = setup
+    model._models_cache[('ep', '8gb', False)] = {'data': [{'id': 'stale'}]}
+    class FakeProc:
+        returncode = 0
+        async def wait(self):
+            return 0
+    model._process = FakeProc()
+    await model._cleanup()
+    assert model._models_cache == {}
