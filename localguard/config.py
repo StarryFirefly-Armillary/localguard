@@ -21,8 +21,10 @@ class Config:
     max_prompt_chars: int = 24_000
     # Only the top-N highest-risk findings get an AI-written explanation;
     # the rest keep their full deterministic evidence chain but no prose.
-    # 0 = explain all. Bounding this keeps audit time predictable on 4-8GB.
-    max_model_explanations: int = 40
+    # 0 = explain all. 16 is the tested-safe default: larger rounds
+    # make the 4B model emit malformed JSON in later batches, which fails
+    # the strict location/ID gate and silently loses triage for the whole audit.
+    max_model_explanations: int = 16
     model_tier: str = '8gb'
     keep_model_resident: bool = False
     model_endpoint: str = 'http://127.0.0.1:1234/v1'
