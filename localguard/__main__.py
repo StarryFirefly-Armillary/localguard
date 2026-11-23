@@ -50,7 +50,8 @@ def main():
             print(json.dumps({'offline':config.offline,'allowed_roots':[str(r) for r in config.allowed_roots],
                 'data_dir':str(config.data_dir),'scanners':{s:config.binaries.get(s,'unavailable') for s in ['semgrep','gitleaks','gosec','cppcheck','pip-audit','grype']},
                 'grammars':grammars,'model_tier':config.model_tier,'model_exists':bool(config.model_path and Path(config.model_path).is_file()),
-                'keep_model_resident':config.keep_model_resident},ensure_ascii=False,indent=2))
+                'keep_model_resident':config.keep_model_resident,
+                'max_model_explanations':config.max_model_explanations},ensure_ascii=False,indent=2))
     except (ValueError,OSError) as exc:
         print(f'LocalGuard: {exc}',file=sys.stderr)
         raise SystemExit(1)
