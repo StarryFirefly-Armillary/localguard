@@ -281,7 +281,8 @@ class LocalModel:
                 return identity
         raise ModelUnavailable('Required local model is not advertised: 8gb needs Qwen3.5-4B Q4; 4gb needs the configured small-model alias.')
 
-    async def _infer(self, messages, tools, tier, vision=False, *, structured=False, release=True):
+    async def _infer(self, messages, tools, tier, vision=False, *, structured=False, release=True,
+                     max_tokens=None):
         async with self._lock:
             if self._closed:
                 raise ModelUnavailable('Local model has been closed.')
@@ -294,7 +295,11 @@ class LocalModel:
                                'max_tokens': 512, 'stream': False,
                                'chat_template_kwargs': {'enable_thinking': False}}
                     if structured:
-                        payload.update(response_format={'type': 'json_object'}, max_tokens=1024)
+                        # 8 findings with triage (explanation + remediation +
+                        # reason + verdict) need ~2048 tokens; 1024 truncated
+                        # the JSON and silently disabled triage on every audit.
+                        payload.update(response_format={'type': 'json_object'},
+                                       max_tokens=max_tokens or 1024)
                     if tools:
                         payload.update(tools=tools, tool_choice='auto', parallel_tool_calls=False)
                     result = await self._request(endpoint, 'POST', '/chat/completions', payload)
@@ -616,7 +621,12 @@ class LocalModel:
         )
         explanations = {}
         try:
-            batch_size = min(8, self.config.max_prompt_files)  # see schema maxItems note above
+            # Triage prompts ask for 5 fields per finding; with 8 findings the
+            # 4B model degenerates into a repeating loop on later batches and
+            # emits unterminated JSON. 4 findings/batch keeps outputs short and
+            # stable (measured: no loop, and faster overall than a failed
+            # 8-batch round that has to be retried without triage).
+            batch_size = min(4 if triage else 8, self.config.max_prompt_files)
             for start in range(0, len(records), batch_size):
                 batch = records[start:start + batch_size]
                 payload = {'untrusted_evidence': batch}
@@ -626,30 +636,65 @@ class LocalModel:
                     {'role': 'system', 'content': system},
                     {'role': 'user', 'content': _json(payload)},
                 ]
-                response = await self._infer(messages, [], tier, structured=True, release=False)
+                response = await self._infer(messages, [], tier, structured=True, release=False,
+                                             max_tokens=2048 if triage else 1024)
                 try:
-                    updates = json.loads(response['choices'][0]['message']['content'])
-                    if triage and isinstance(updates.get('explanations'), list):
-                        # Triage is advisory: normalize per-item so one malformed
-                        # verdict can never invalidate the whole explanation batch.
-                        valid_verdicts = {'likely_true', 'likely_false', 'uncertain'}
-                        for item in updates['explanations']:
-                            if not isinstance(item, dict):
+                    raw_content = response['choices'][0]['message']['content']
+                    try:
+                        updates = json.loads(raw_content)
+                    except json.JSONDecodeError as parse_exc:
+                        # Log a bounded excerpt of the malformed output so the
+                        # root cause (truncation vs invalid escaping) is visible.
+                        self._log('model_explanation_json_error', tier=tier,
+                                  triage=triage, position=parse_exc.pos,
+                                  excerpt=raw_content[:600], tail=raw_content[-200:])
+                        raise
+                    if not isinstance(updates, dict) or not isinstance(updates.get('explanations'), list):
+                        raise ValueError('Model response has no explanations array')
+                    valid_verdicts = {'likely_true', 'likely_false', 'uncertain'}
+                    expected_ids = [r['id'] for r in batch]
+                    entries = updates['explanations']
+                    # Self-heal only the two benign truncation symptoms: a null
+                    # entry, or fewer entries than findings. Every other anomaly
+                    # (unknown/duplicate id, extra fields, prose locations) must
+                    # still be rejected by the checks below — the report's
+                    # locations never come from model text.
+                    healed = []
+                    for index, item in enumerate(entries):
+                        if isinstance(item, dict) and item.get('id') in expected_ids:
+                            # Normalize advisory triage fields per-item before
+                            # schema validation so one bad verdict can't fail
+                            # the batch. Unknown keys (e.g. locations) are kept
+                            # so the strict schema still rejects them.
+                            if triage:
+                                if item.get('verdict') not in valid_verdicts:
+                                    for key in ('verdict', 'confidence', 'reason'):
+                                        item.pop(key, None)
+                                else:
+                                    conf = item.get('confidence')
+                                    if not isinstance(conf, (int, float)) or isinstance(conf, bool) or not 0 <= conf <= 1:
+                                        item.pop('confidence', None)
+                                    if isinstance(item.get('reason'), str):
+                                        item['reason'] = (position.sub('[已省略位置]', item['reason']).strip() or '模型未提供理由')[:2000]
+                            healed.append(item)
+                        elif not isinstance(item, dict) and index < len(expected_ids):
+                            ident = expected_ids[index]
+                            if any(e.get('id') == ident for e in healed if isinstance(e, dict)):
                                 continue
-                            if item.get('verdict') not in valid_verdicts:
-                                for key in ('verdict', 'confidence', 'reason'):
-                                    item.pop(key, None)
-                                continue
-                            conf = item.get('confidence')
-                            if not isinstance(conf, (int, float)) or isinstance(conf, bool) or not 0 <= conf <= 1:
-                                item.pop('confidence', None)
-                            reason = item.get('reason')
-                            if isinstance(reason, str):
-                                item['reason'] = (position.sub('[已省略位置]', reason).strip() or '模型未提供理由')[:2000]
+                            healed.append({'id': ident,
+                                           'explanation': '模型未提供说明，请依据下方证据人工判断。',
+                                           'remediation': '暂无模型修复建议，请依据原始证据人工判断。'})
+                        else:
+                            healed.append(item)  # let validation reject it
+                    for ident in expected_ids:
+                        if not any(isinstance(e, dict) and e.get('id') == ident for e in healed):
+                            healed.append({'id': ident,
+                                           'explanation': '模型未提供说明，请依据下方证据人工判断。',
+                                           'remediation': '暂无模型修复建议，请依据原始证据人工判断。'})
+                    updates = {'explanations': healed}
                     validate(updates, schema)
-                    expected = {record['id'] for record in batch}
                     actual = [item['id'] for item in updates['explanations']]
-                    if len(actual) != len(set(actual)) or set(actual) != expected:
+                    if len(actual) != len(set(actual)) or set(actual) != set(expected_ids):
                         raise ValueError('Explanation IDs do not match the validated findings')
                     for item in updates['explanations']:
                         for field in ('explanation', 'remediation'):
@@ -663,7 +708,20 @@ class LocalModel:
                             item['reason'] = reason[:500]
                         explanations[item['id']] = item
                 except (ValueError, KeyError, IndexError, TypeError, ValidationError) as exc:
-                    raise ModelUnavailable('Model explanation failed schema or location validation; deterministic evidence is retained.') from exc
+                    # Keep the strict gate: malformed model output (invented
+                    # ids, prose locations, extra fields) is rejected so no
+                    # unverified content enters the report. Include the batch
+                    # and concrete cause so repeated failures are diagnosable.
+                    import traceback as _tb
+                    tb_lines = _tb.extract_tb(exc.__traceback__)
+                    origin = f'{tb_lines[-1].filename.rsplit(chr(92),1)[-1]}:{tb_lines[-1].lineno}' if tb_lines else '?'
+                    detail = f'{type(exc).__name__}@{origin}: {str(exc)[:300]}'
+                    self._log('model_explanation_error_trace', tier=tier, triage=triage,
+                              origin=origin, detail=str(exc)[:400])
+                    raise ModelUnavailable(
+                        f'Model explanation failed schema or location validation '
+                        f'(batch {start // batch_size + 1}, {detail}); '
+                        f'deterministic evidence is retained.') from exc
             self._log('model_explanations', count=len(explanations), tier=tier,
                       triage=triage, validation='passed')
             return explanations
