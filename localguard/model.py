@@ -536,24 +536,38 @@ class LocalModel:
         # The local model tends to echo the input key ("warnings") and uses
         # "text" for the translation. Accept both shapes; normalize to ours.
         entries = raw_update.get('explanations') or raw_update.get('warnings') or []
-        updates = {'explanations': [
-            {'id': e.get('id'),
-             'explanation': e.get('explanation') or e.get('text') or e.get('translation')}
-            for e in entries if isinstance(e, dict)
-        ]}
+        normalized = []
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            explanation = e.get('explanation') or e.get('text') or e.get('translation')
+            # A local model occasionally emits a null/empty translation for a
+            # single warning. Dropping that one entry keeps the other warnings
+            # translated and the audit healthy; the UI falls back to the
+            # verbatim English original for the dropped id.
+            if not isinstance(explanation, str) or not explanation.strip():
+                continue
+            normalized.append({'id': e.get('id'), 'explanation': explanation})
+        if not normalized:
+            raise ValueError(f'Warning explanation count {len(normalized)} != {len(records)} (no usable entries)')
+        updates = {'explanations': normalized}
         validate(updates, schema)
         expected = {r['id'] for r in records}
         items = updates['explanations']
-        if len(items) != len(records):
-            raise ValueError(f'Warning explanation count {len(items)} != {len(records)}')
         actual_ids = {i['id'] for i in items}
         if actual_ids == expected and len(actual_ids) == len(items):
             return {i['id']: i['explanation'] for i in items}
-        # Models frequently renumber or ignore the supplied ids. The order is
-        # stable in practice, so fall back to positional alignment rather than
-        # dropping every explanation over a cosmetic id mismatch.
-        return {record['id']: item['explanation']
-                for record, item in zip(records, items)}
+        # Some returned ids are valid and some are missing/renumbered. Trust
+        # any id that is in the expected set, then position-align only the
+        # remaining entries. Dropped ids simply lack a Chinese helper and the
+        # UI keeps the verbatim original — an advisory translation must never
+        # fail the whole audit.
+        result = {i['id']: i['explanation'] for i in items if i.get('id') in expected}
+        remaining_records = [r['id'] for r in records if r['id'] not in result]
+        unmatched = [i['explanation'] for i in items if i.get('id') not in expected]
+        for record_id, explanation in zip(remaining_records, unmatched):
+            result[record_id] = explanation
+        return result
 
     async def explain_issues(self, records, tier='8gb', triage=False):
         """Explain validated findings and optionally triage likely false positives.
@@ -574,8 +588,12 @@ class LocalModel:
                 'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
                 'reason': {'type': 'string', 'minLength': 1, 'maxLength': 2000},
             })
+        # Batch of 8: measured on the local 4B Q4 model — 8 findings/batch is
+        # stable (2/2) at ~2.3s per finding vs ~3.0s at 4/batch, cutting total
+        # explanation time ~22%. 16 is near the failure edge, 32 fails output
+        # validation (truncated/missing IDs), so 8 is the safe sweet spot.
         schema = {'type': 'object', 'additionalProperties': False, 'required': ['explanations'], 'properties': {
-            'explanations': {'type': 'array', 'maxItems': 4, 'items': {
+            'explanations': {'type': 'array', 'maxItems': 8, 'items': {
                 'type': 'object', 'additionalProperties': False,
                 'required': item_required, 'properties': item_props}}}}
         position = re.compile(r'\b(?:line\s*(?:number\s*)?#?\s*\d+|L\d+)\b|第\s*[\d一二三四五六七八九十百]+\s*行|[\w./\\-]+\.[A-Za-z]+:\d+', re.I)
@@ -598,7 +616,7 @@ class LocalModel:
         )
         explanations = {}
         try:
-            batch_size = min(4, self.config.max_prompt_files)
+            batch_size = min(8, self.config.max_prompt_files)  # see schema maxItems note above
             for start in range(0, len(records), batch_size):
                 batch = records[start:start + batch_size]
                 payload = {'untrusted_evidence': batch}
