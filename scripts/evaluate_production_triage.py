@@ -73,6 +73,27 @@ def _is_placeholder(item: dict) -> bool:
             and item.get('remediation') == PLACEHOLDER_REMEDIATION)
 
 
+def _field_completeness_from_presence(items: list[dict]) -> dict:
+    """Count fields from presence-only records (no raw field text needed).
+
+    For artifacts created before raw responses were retained, per_sample
+    carries only `explanation_present`/`remediation_present`/`verdict_present`/
+    `confidence_present`/`reason_present` booleans. _field_completeness() CANNOT
+    be applied to those (it reads actual values and would return 0) — this
+    function is the correct recompute path for presence-only artifacts.
+    """
+    stats = {k: 0 for k in OUTPUT_FIELDS}
+    stats['all_fields'] = 0
+    for item in items:
+        flags = {k: bool(item.get(f'{k}_present')) for k in OUTPUT_FIELDS}
+        for key in OUTPUT_FIELDS:
+            if flags[key]:
+                stats[key] += 1
+        if all(flags.values()):
+            stats['all_fields'] += 1
+    return stats
+
+
 def _field_completeness(items: list[dict]) -> dict:
     """Count the five output fields over items. Iterates the FIXED tuple.
 
@@ -217,6 +238,10 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
 
         async def capture_infer(messages, tools, tier, *args, **kwargs):
             resp = await original_infer(messages, tools, tier, *args, **kwargs)
+            # Re-capture after the first inference too: if the model auto-started
+            # the server lazily, the pre-call snapshot saw nothing.
+            if not server_process.get('observed'):
+                server_process.update(_server_process(cfg.model_endpoint))
             # Capture the FULL raw response for a local eval artifact (no cap)
             # — a hash or head-only excerpt cannot explain a missing entry that
             # occurred at the tail of the JSON. Full text stays local only.

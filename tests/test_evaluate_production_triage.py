@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from evaluate_production_triage import (
-    _metrics, _field_completeness, _is_placeholder,
+    _metrics, _field_completeness, _field_completeness_from_presence, _is_placeholder,
     OUTPUT_FIELDS, PLACEHOLDER_EXPLANATION, PLACEHOLDER_REMEDIATION)
 
 
@@ -81,3 +81,17 @@ def test_placeholder_identification_calls_real_function():
     assert _is_placeholder(ph) is True
     assert _is_placeholder(real) is False
     assert _is_placeholder(no_verdict) is False  # distinguishes the two production paths
+
+
+def test_presence_based_recompute_for_presence_only_artifacts():
+    # Regression: a corrected artifact declared _field_completeness(per_sample)
+    # was valid, but per_sample has only *_present booleans -> returns 0.
+    full = _row('likely_true', 'likely_true')
+    partial = _row('likely_true', 'likely_true', reason='')
+    presence = [{f'{k}_present': item.get(k) not in (None, '') for k in OUTPUT_FIELDS}
+                for item in (full, partial)]
+    stats = _field_completeness_from_presence(presence)
+    assert stats == {'explanation': 2, 'remediation': 2, 'verdict': 2,
+                     'confidence': 2, 'reason': 1, 'all_fields': 1}
+    # both functions agree when an item has both values and presence flags
+    assert stats == _field_completeness([full, partial])
