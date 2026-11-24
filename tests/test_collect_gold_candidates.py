@@ -13,15 +13,27 @@ def _issue(iid, path, line):
             'evidence': [{'tool': 'semgrep', 'raw_ref': '#/results/24'}]}
 
 
-def test_align_deduplicates_one_finding_hitting_two_vulns():
-    # catalog/views.py appears in both VULN-002 (45-55) and VULN-003 (60-65);
-    # a single finding must yield ONE candidate with two provenance ids.
-    data = {'target': 'x', 'issues': [_issue('ISSUE-A', 'catalog/views.py', 119)]}
+def test_align_never_attaches_cwe_inconsistent_vuln():
+    # A CWE-89 finding in catalog/views.py lines 45-55 must align to VULN-002
+    # (SQLi) ONLY — never to VULN-003 (XSS) just because it is the same file.
+    data = {'target': 'x', 'issues': [_issue('ISSUE-A', 'catalog/views.py', 50)]}
     rows = align_positives(data)
-    ids = [r['id'] for r in rows]
-    assert ids.count('ISSUE-A') == 1
-    provenance = [r['provenance'] for r in rows if r['id'] == 'ISSUE-A'][0]
-    assert set(provenance['ground_truth_ids']) >= {'VULN-002', 'VULN-003'}
+    assert len(rows) == 1
+    r = rows[0]
+    assert r['provenance']['ground_truth_ids'] == ['VULN-002']
+    assert r['provenance']['match_quality'] == 'strict_file_cwe_line'
+    assert r['proposed_label'] == 'likely_true'
+    assert all(c == 'CWE-89' for c in r['provenance']['ground_truth_cwes'])
+
+
+def test_align_marks_file_only_as_uncertain():
+    # Same file + CWE but far outside the line range -> uncertain, not positive.
+    data = {'target': 'x', 'issues': [_issue('ISSUE-B', 'catalog/views.py', 119)]}
+    rows = align_positives(data)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r['provenance']['match_quality'] == 'file_cwe_only_uncertain'
+    assert r['proposed_label'] == 'uncertain'
 
 
 def test_candidate_is_unlabelled_and_review_ready():
