@@ -25,9 +25,15 @@ async def verify(installation, target):
         async with ClientSession(read, write, client_info=Implementation(name='offline-install-verifier',version='1.0')) as client:
             await client.initialize()
             tools = {tool.name:tool for tool in (await client.list_tools()).tools}
-            assert len(tools) == 8
+            # Assert the capabilities this verifier actually exercises instead
+            # of a hardcoded count that goes stale whenever the protocol grows.
+            for required in ('audit_repository', 'get_audit_status', 'view_file',
+                             'list_audits', 'cancel_audit'):
+                assert required in tools, f'missing MCP tool: {required}'
+            # Dependency CVEs are asserted below, so dependency scanning must
+            # be enabled — a False here used to make that assertion impossible.
             queued = await client.call_tool('audit_repository', {'target':str(target),'scanners':['patterns','semgrep','gitleaks','cppcheck','grype'],
-                'include_dependencies':False,'depth':'standard','model_tier':'4gb'})
+                'include_dependencies':True,'depth':'standard','model_tier':'4gb'})
             assert not queued.isError, queued
             audit_id = queued.structuredContent['audit_id']
             assert queued.structuredContent['status'] == 'queued'
