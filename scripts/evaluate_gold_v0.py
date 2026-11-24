@@ -109,7 +109,11 @@ def source_lines(record: dict, tool_calls: dict[str, dict]) -> list[dict]:
 VALID_MASKS = {None, 'title', 'metadata', 'both'}
 
 
-VALID_EVIDENCE = {'window', 'window_code_only', 'full_code_only'}
+VALID_EVIDENCE = {'window', 'window_code_only', 'full_code_only', 'full_code_only_budgeted'}
+
+# Chosen ONCE by static byte accounting over max_chars in {400..800}: 600
+# produced a 7526-byte batch (>7500), 500 caps at 6866. No parameter sweep.
+FULL_BUDGET_CAP = 500
 
 
 def build_records(records: list[dict], mask: str | None = None,
@@ -132,7 +136,12 @@ def build_records(records: list[dict], mask: str | None = None,
       comments/docstrings stripped uniformly. real_cve_tool_call records have
       no full source (only a 5-line window), so they fall back to that window
       with comments stripped and are marked evidence_basis='window_only' —
-      never misrepresented as a full function.
+      never misrepresented as a full function. NOTE: this mode exceeds the
+      production 8000-byte evidence budget and cannot run end-to-end.
+    - evidence='full_code_only_budgeted' is the same full-function extraction
+      but bounded to FULL_BUDGET_CAP=500 chars, chosen statically so ALL
+      batches stay <=7500 bytes with headroom. This is the runnable version
+      for the context-size comparison.
     """
     if mask not in VALID_MASKS:
         raise ValueError(f'mask must be one of {VALID_MASKS}')
@@ -182,8 +191,11 @@ def build_records(records: list[dict], mask: str | None = None,
                 lines = [l for l in lines if l['text'].strip()]
                 evidence_basis = 'window_only_no_full_source'
             else:
-                lines = build_evidence('\n'.join(all_lines), finding_line, language)
-                evidence_basis = 'full_function_code_only'
+                cap = FULL_BUDGET_CAP if evidence == 'full_code_only_budgeted' else 1200
+                lines = build_evidence('\n'.join(all_lines), finding_line, language, max_chars=cap)
+                evidence_basis = ('full_function_code_only_budgeted'
+                                  if evidence == 'full_code_only_budgeted'
+                                  else 'full_function_code_only')
         contexts.append({
             'id': record['id'],
             'title': str(title)[:300],

@@ -1,17 +1,17 @@
-"""Evidence-completeness comparison on gold_v0_eval (18 samples).
+"""Budget-safe evidence-completeness comparison on gold_v0_eval (18 samples).
 
-Only ONE variable changes between the two main conditions — context size —
-because comments/docstrings are stripped in BOTH:
-  window_code_only : original +/-3-line window, comments stripped
-  full_code_only   : complete enclosing function, comments stripped
-'window' (verbatim, with comment labels) is included as a PRODUCTION-STATUS
-REFERENCE only; it is not one of the two main conditions.
+Only ONE variable changes between the two conditions — context size — since
+comments/docstrings are stripped in BOTH:
+  window_code_only         : original +/-3-line window, comments stripped
+  full_code_only_budgeted  : enclosing function at FULL_BUDGET_CAP=500 chars,
+                             comments stripped; cap chosen statically so every
+                             batch stays <=7500 bytes (production budget 8000).
 
-Both main conditions must reach 18/18 verdict coverage. Any missing verdict
-marks the condition invalid and no significance claim is made.
+Both conditions must reach 18/18 verdict coverage. Any missing verdict marks
+the condition invalid and no significance claim is made.
 
 Reuses the production explain_issues() path (schema/batching/tokens/parsing
-all shared). No prompt change, no retrain, no pool expansion.
+all shared). No prompt change, no retrain, no pool expansion, no cap sweep.
 """
 from __future__ import annotations
 
@@ -32,9 +32,8 @@ from localguard.registry import ToolRegistry
 
 GOLD = ROOT / '.workbuddy' / 'gold'
 CONDITIONS = [
-    ('window', 'window', 'reference'),
     ('window_code_only', 'window_code_only', 'main'),
-    ('full_code_only', 'full_code_only', 'main'),
+    ('full_code_only_budgeted', 'full_code_only_budgeted', 'main'),
 ]
 
 
