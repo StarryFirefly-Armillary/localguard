@@ -50,6 +50,7 @@ def make_candidate(issue: dict, source: str, provenance: dict, proposed_label: s
         'human_reason': None,
         'provenance': provenance,
         'finding': {
+            'rule_id': issue.get('rule_id'),  # may be null if source didn't carry it
             'title': issue.get('title'),
             'severity': issue.get('severity'),
             'category': issue.get('category'),
@@ -80,7 +81,38 @@ def _strict_hit(issue: dict, vuln: dict) -> bool:
     return bool(_cwe_of(issue)) and _cwe_of(issue) == (vuln.get('cwe') or '').upper()
 
 
-def align_positives(data: dict) -> list[dict]:
+def _git_commit(root: Path | None) -> str | None:
+    """Pin the scanned source version for reproducibility."""
+    if not root:
+        return None
+    try:
+        import subprocess
+        return subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'],
+                                       stderr=subprocess.DEVNULL).decode().strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def function_at_line(source_root: Path, rel_path: str, line: int) -> str | None:
+    """Find the enclosing function name for a finding line (Python via AST)."""
+    path = source_root / rel_path.lstrip('./')
+    if not path.is_file():
+        return None
+    try:
+        import ast
+        tree = ast.parse(path.read_text(encoding='utf-8', errors='replace'))
+    except (SyntaxError, OSError):
+        return None  # non-Python or unparseable -> no function evidence
+    best = None
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.lineno <= line <= getattr(node, 'end_lineno', node.lineno):
+                if best is None or node.lineno > best[0]:
+                    best = (node.lineno, node.name)
+    return best[1] if best else None
+
+
+def align_positives(data: dict, source_root: Path | None = None) -> list[dict]:
     """Strictly align DISTINCT findings to documented vulnerabilities.
 
     - strict hit (file + CWE + line range) -> proposed_label likely_true
@@ -94,32 +126,38 @@ def align_positives(data: dict) -> list[dict]:
     out = []
     for issue in issues:
         iid = issue.get('id')
+        loc = issue.get('locations', [{}])[0]
+        rel = loc.get('path', '').replace('\\', '/').lstrip('./')
+        line = loc.get('line') or 0
+        cwe = _cwe_of(issue)
+        fn = function_at_line(source_root, rel, line) if source_root else None
+
+        # Layer 1 (strongest): enclosing function + CWE match. Line ranges in
+        # the ground truth are approximate; the function is the semantic unit.
+        fn_hits = [v for v in vulns
+                   if fn and v['location'].get('function') == fn
+                   and cwe == (v.get('cwe') or '').upper()]
+        # Layer 2: file + CWE + strict line range.
         strict_hits = [v for v in vulns if _strict_hit(issue, v)]
-        if strict_hits:
-            # pick the closest by line distance if multiple same-CWE hits
-            loc = issue.get('locations', [{}])[0]
-            line = loc.get('line') or 0
-            def dist(v):
-                g = v['location']
-                lo, hi = g.get('line_start', 1), g.get('line_end', g.get('line_start', 1))
-                return 0 if lo <= line <= hi else min(abs(line - lo), abs(line - hi))
-            best = min(strict_hits, key=dist)
-            hits = [best]
-            quality, label = 'strict_file_cwe_line', 'likely_true'
+        if fn_hits:
+            hits, quality, label = fn_hits[:1], 'function_cwe', 'likely_true'
+        elif strict_hits:
+            hits, quality, label = strict_hits[:1], 'strict_file_cwe_line', 'likely_true'
         else:
-            # file-level fallback: only if CWE is consistent, still uncertain
+            # fallback: file + CWE only -> uncertain, never a positive
             cwe_consistent = [v for v in vulns
-                              if _cwe_of(issue) == (v.get('cwe') or '').upper()
-                              and any(matches(loc, v) for loc in issue.get('locations', []))]
+                              if cwe == (v.get('cwe') or '').upper()
+                              and any(matches(l, v) for l in issue.get('locations', []))]
             if not cwe_consistent:
                 continue  # no semantic link at all -> not a candidate
-            hits = cwe_consistent[:1]
-            quality, label = 'file_cwe_only_uncertain', 'uncertain'
+            hits, quality, label = cwe_consistent[:1], 'file_cwe_only_uncertain', 'uncertain'
         out.append(make_candidate(issue, 'vulnshop_current_scan', {
             'ground_truth_ids': [v['id'] for v in hits],
             'ground_truth_locations': [v['location'] for v in hits],
             'ground_truth_cwes': [v.get('cwe') for v in hits],
             'match_quality': quality,
+            'enclosing_function': fn,
+            'code_commit': _git_commit(source_root) if source_root else None,
             'target': data.get('target'),
             'audit_id': data.get('audit_id'),
         }, label))
@@ -166,7 +204,7 @@ def main() -> int:
         p.error('exactly one of --pos or --replay is required')
     if a.pos:
         data = asyncio.run(collect_pos(a.target.resolve(), a.config))
-        rows = align_positives(data)
+        rows = align_positives(data, source_root=a.target.resolve())
         print(f"scanner issues={len(data['issues'])}, positives aligned={len(rows)}")
     else:
         raw = json.loads(a.replay.read_text(encoding='utf-8'))
