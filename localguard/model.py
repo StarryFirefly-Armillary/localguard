@@ -552,7 +552,19 @@ class LocalModel:
         messages = [{'role': 'system', 'content': system},
                     {'role': 'user', 'content': _json({'warnings': records})}]
         response = await self._infer(messages, [], tier, structured=True, release=False)
-        raw_update = json.loads(response['choices'][0]['message']['content'])
+        # A malformed model response (missing/empty choices, wrong shapes) is a
+        # model failure, not an audit failure. Normalize every parse/index/type
+        # error to ModelUnavailable (a RuntimeError) so the engine's advisory
+        # boundary can degrade to the verbatim warnings instead of failing the
+        # whole audit. Keep the cause for diagnosis.
+        try:
+            choices = response['choices']
+            content = choices[0]['message']['content']
+            raw_update = json.loads(content)
+            if not isinstance(raw_update, dict):
+                raise ValueError('warning explanation response is not an object')
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ModelUnavailable(f'Warning explanation response malformed: {type(exc).__name__}: {str(exc)[:200]}') from exc
         # Local models sometimes add stray top-level keys; keep only what we
         # need so a cosmetic extra field cannot discard all explanations.
         # The local model tends to echo the input key ("warnings") and uses

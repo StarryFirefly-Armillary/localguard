@@ -676,3 +676,23 @@ async def test_model_list_cache_invalidated_when_owned_process_changes(setup):
     model._process = FakeProc()
     await model._cleanup()
     assert model._models_cache == {}
+
+
+@run_async
+@pytest.mark.parametrize('malformed', [
+    {'choices': []},
+    {'choices': [{'message': {}}]},
+    {'choices': [{'message': {'content': 'not json'}}]},
+    {'unexpected': 'shape'},
+])
+async def test_warning_translation_malformed_response_is_model_unavailable(setup, monkeypatch, malformed):
+    """A broken model response must surface as ModelUnavailable so the engine
+    advisory boundary degrades gracefully; raw KeyError/IndexError/TypeError
+    would escape that boundary and fail an otherwise valid audit."""
+    from localguard.model import ModelUnavailable
+    model, _, _ = setup
+    async def infer(*args, **kwargs):
+        return malformed
+    monkeypatch.setattr(model, '_infer', infer)
+    with pytest.raises(ModelUnavailable):
+        await model.explain_warnings(['warning A'], '8gb')
