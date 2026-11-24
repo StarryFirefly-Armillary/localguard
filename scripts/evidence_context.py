@@ -25,13 +25,26 @@ from __future__ import annotations
 
 import ast
 import io
-import re
 import tokenize
 from pathlib import Path
 
-# Multi-language comment markers for the non-Python fallback.
-_LINE_COMMENT = re.compile(r'(?<!:)(//|#).*$')
-_BLOCK_COMMENT = re.compile(r'/\*.*?\*/', re.S)
+
+def _strip_python_line_comments(source: str) -> str:
+    """Fallback for incomplete Python windows: strip inline comments per line."""
+    output = []
+    for line in source.splitlines():
+        indent = line[:len(line) - len(line.lstrip())]
+        body = line[len(indent):]
+        cut = None
+        try:
+            for token in tokenize.generate_tokens(io.StringIO(body + '\n').readline):
+                if token.type == tokenize.COMMENT:
+                    cut = token.start[1]
+                    break
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            cut = None
+        output.append(indent + body[:cut] if cut is not None else line)
+    return '\n'.join(output)
 
 
 def strip_comments_python(source: str) -> str:
@@ -43,7 +56,7 @@ def strip_comments_python(source: str) -> str:
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, IndentationError):
-        return _strip_comments_generic(source)
+        return _strip_python_line_comments(source)
     out_lines = [list(line) for line in source.splitlines()]
     for tok in tokens:
         if tok.type == tokenize.COMMENT:
@@ -77,17 +90,29 @@ def strip_comments_python(source: str) -> str:
 
 
 def _strip_comments_generic(source: str) -> str:
-    """Conservative fallback for non-Python: drop // and /* */ comments."""
-    source = _BLOCK_COMMENT.sub('', source)
+    """Remove only standalone comment lines; never truncate inline content.
+
+    Inline # and // occur in URLs, Base64, Markdown anchors, Ruby interpolation,
+    and string literals. Without a language lexer, preserving inline text is
+    safer than attempting inline comment removal.
+    """
     kept = []
     for line in source.splitlines():
-        stripped = _LINE_COMMENT.sub('', line)
-        kept.append(stripped)
+        stripped = line.lstrip()
+        if stripped.startswith(('//', '#', '/*', '*', '*/')):
+            kept.append('')
+        else:
+            kept.append(line)
     return '\n'.join(kept)
 
 
 def strip_comments(source: str, language: str) -> str:
-    return strip_comments_python(source) if language == 'python' else _strip_comments_generic(source)
+    if language == 'python':
+        return strip_comments_python(source)
+    if language in {'javascript', 'typescript', 'go', 'ruby', 'java', 'c', 'cpp',
+                    'php', 'rust', 'solidity', 'bash', 'powershell'}:
+        return _strip_comments_generic(source)
+    return source
 
 
 def strip_window_comments(lines: list[dict], language: str) -> list[dict]:
