@@ -43,7 +43,10 @@ def test_function_cwe_alignment_on_real_vulnshop():
     dozens of lines away yet still be in the documented vulnerable function.
     """
     import json
+    import pytest
     source = ROOT / 'repos' / 'code-safety' / 'vulnerable-app'
+    if not source.is_dir():
+        pytest.skip('VulnShop checkout not present (benchmark repos are not in CI test job)')
     data = {'target': str(source),
             'issues': [_issue('ISSUE-FN', 'authentication/views.py', 73)]}
     rows = align_positives(data, source_root=source)
