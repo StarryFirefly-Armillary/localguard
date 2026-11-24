@@ -62,35 +62,67 @@ def make_candidate(issue: dict, source: str, provenance: dict, proposed_label: s
     }
 
 
-def align_positives(data: dict) -> list[dict]:
-    """Keep DISTINCT scanner findings that hit a documented real vulnerability.
+def _cwe_of(issue: dict) -> str:
+    return (issue.get('cwe') or '').upper()
 
-    One issue can land on multiple documented vulnerabilities (e.g. a single
-    semgrep finding at catalog/views.py:119 covers VULN-002 and VULN-003). A
-    gold sample is one production finding, so de-duplicate by issue id and
-    record all matched ground-truth ids as provenance — never emit the same
-    finding twice, which would leak between train/eval splits.
+
+def _strict_hit(issue: dict, vuln: dict) -> bool:
+    """Require same file AND CWE AND line within the documented range (+/-5).
+
+    File-level alone is NOT enough: the old aligner hung a SQL-injection
+    finding on both VULN-001 (SQLi) and VULN-016 (brute-force), and another
+    on VULN-002 (SQLi) and VULN-003 (XSS). CWE consistency is the minimum
+    semantic guard; line range tightens it further.
+    """
+    loc = issue.get('locations', [{}])[0]
+    if not matches(loc, vuln, strict_line=True):  # file + line range
+        return False
+    return bool(_cwe_of(issue)) and _cwe_of(issue) == (vuln.get('cwe') or '').upper()
+
+
+def align_positives(data: dict) -> list[dict]:
+    """Strictly align DISTINCT findings to documented vulnerabilities.
+
+    - strict hit (file + CWE + line range) -> proposed_label likely_true
+    - file-level only (any CWE mismatch or out-of-range line) -> uncertain,
+      never a positive candidate
+    - one finding maps to at most ONE semantically consistent ground truth;
+      never attach a CWE-inconsistent vulnerability to the same finding.
     """
     vulns = load_ground_truth()
     issues = data.get('issues', [])
-    matched: dict[str, list[dict]] = {}
-    issue_by_id: dict[str, dict] = {}
-    for vuln in vulns:
-        for issue in issues:
-            if any(matches(loc, vuln) for loc in issue.get('locations', [])):
-                iid = issue.get('id')
-                matched.setdefault(iid, []).append(vuln)
-                issue_by_id.setdefault(iid, issue)
-                break
     out = []
-    for iid, hits in matched.items():
-        out.append(make_candidate(issue_by_id[iid], 'vulnshop_current_scan', {
+    for issue in issues:
+        iid = issue.get('id')
+        strict_hits = [v for v in vulns if _strict_hit(issue, v)]
+        if strict_hits:
+            # pick the closest by line distance if multiple same-CWE hits
+            loc = issue.get('locations', [{}])[0]
+            line = loc.get('line') or 0
+            def dist(v):
+                g = v['location']
+                lo, hi = g.get('line_start', 1), g.get('line_end', g.get('line_start', 1))
+                return 0 if lo <= line <= hi else min(abs(line - lo), abs(line - hi))
+            best = min(strict_hits, key=dist)
+            hits = [best]
+            quality, label = 'strict_file_cwe_line', 'likely_true'
+        else:
+            # file-level fallback: only if CWE is consistent, still uncertain
+            cwe_consistent = [v for v in vulns
+                              if _cwe_of(issue) == (v.get('cwe') or '').upper()
+                              and any(matches(loc, v) for loc in issue.get('locations', []))]
+            if not cwe_consistent:
+                continue  # no semantic link at all -> not a candidate
+            hits = cwe_consistent[:1]
+            quality, label = 'file_cwe_only_uncertain', 'uncertain'
+        out.append(make_candidate(issue, 'vulnshop_current_scan', {
             'ground_truth_ids': [v['id'] for v in hits],
             'ground_truth_locations': [v['location'] for v in hits],
             'ground_truth_cwes': [v.get('cwe') for v in hits],
+            'match_quality': quality,
             'target': data.get('target'),
             'audit_id': data.get('audit_id'),
-        }, 'likely_true'))
+        }, label))
     return out
 
 
