@@ -25,7 +25,10 @@ class Config:
     # make the 4B model emit malformed JSON in later batches, which fails
     # the strict location/ID gate and silently loses triage for the whole audit.
     max_model_explanations: int = 16
-    model_tier: str = '8gb'
+    # Local-first: deterministic rules are the safe default. Model tiers are
+    # opt-in so users without a local GGUF don't trigger a needless model
+    # startup, wait, and warning. Explicit '4gb'/'8gb' configs are unchanged.
+    model_tier: str = 'rules'
     keep_model_resident: bool = False
     model_endpoint: str = 'http://127.0.0.1:1234/v1'
     model_name: str = 'qwen3.5-4b'
