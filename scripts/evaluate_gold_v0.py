@@ -30,7 +30,13 @@ LANGUAGES = {
     '.rb': 'ruby', '.java': 'java', '.c': 'c', '.cpp': 'cpp', '.php': 'php',
     '.rs': 'rust', '.sol': 'solidity',
 }
-RULE_META = {
+# HISTORICAL ONLY — DO NOT use to build model inputs.
+# This table used to be injected into old-rule_fp_v2 contexts as CWE/category.
+# That manufactured a CWE shortcut (e.g. django-sql-injection -> CWE-89) that
+# the scanner never produced. build_records() now forwards only metadata that
+# is actually present in the normalized finding. Kept solely so the old A/B
+# artifact can be interpreted; new runs must not consult it.
+RETIRED_RULE_META_FROM_FIRST_AB = {
     'lg.ext.xxe-xml-etree': ('CWE-611', 'other', 'high'),
     'lg.ext.weak-crypto-sha1': ('CWE-327', 'misconfig', 'medium'),
     'lg.ext.weak-crypto-random': ('CWE-330', 'misconfig', 'medium'),
@@ -55,7 +61,8 @@ def tool_call_index() -> dict[str, dict]:
     return index
 
 
-def source_lines(record: dict, tool_calls: dict[str, dict]) -> list[dict]:
+def full_source_lines(record: dict, tool_calls: dict[str, dict]) -> tuple[list[str], int]:
+    """Return (all file lines, finding line) from the pinned source version."""
     finding = record['finding']
     location = finding.get('locations', [{}])[0]
     path = finding.get('path') or location.get('path', '')
@@ -63,11 +70,10 @@ def source_lines(record: dict, tool_calls: dict[str, dict]) -> list[dict]:
     source = record['source']
     if source == 'real_cve_tool_call':
         row = tool_calls[record['id']]
-        return [
-            {'line': item['line'], 'text': item['text'][:100]}
-            for item in row['result'].get('lines', [])
-            if abs(item['line'] - line) <= 3
-        ]
+        lines = [item['text'] for item in row['result'].get('lines', [])]
+        # tool_call result.lines is already a bounded window near the finding;
+        # keep its original numbering by offsetting to the finding line.
+        return lines, line
     if source == 'vulnshop_current_scan':
         root = ROOT / 'repos' / 'code-safety' / 'vulnerable-app'
         expected = record['provenance']['code_commit']
@@ -90,23 +96,94 @@ def source_lines(record: dict, tool_calls: dict[str, dict]) -> list[dict]:
             raise ValueError(f'Unsupported old-rule source: {fix}')
     else:
         raise ValueError(f'Unsupported gold source: {source}')
+    return lines, line
+
+
+def source_lines(record: dict, tool_calls: dict[str, dict]) -> list[dict]:
+    """Legacy ±3-line context (kept so the first A/B stays reproducible)."""
+    lines, line = full_source_lines(record, tool_calls)
     start, end = max(1, line - 3), min(len(lines), line + 3)
     return [{'line': number, 'text': lines[number - 1][:100]} for number in range(start, end + 1)]
 
 
-def build_records(records: list[dict]) -> tuple[list[dict], dict[str, str]]:
+VALID_MASKS = {None, 'title', 'metadata', 'both'}
+
+
+VALID_EVIDENCE = {'window', 'window_code_only', 'full_code_only'}
+
+
+def build_records(records: list[dict], mask: str | None = None,
+                  evidence: str = 'window') -> tuple[list[dict], dict[str, str], dict[str, dict]]:
+    """Map gold records to production explain_issues contexts.
+
+    - Missing cwe/category are EMPTY STRINGS (""), matching production
+      from_finding()'s finding.get('cwe', '') default. Never 'unknown' — that
+      would itself be a label separating negatives from positives.
+    - metadata_origin is returned SEPARATELY for audit only; it is NEVER part
+      of a model context.
+    - masks are SYMMETRIC across all samples: title / metadata / both.
+    - evidence='window' (default) keeps the original ±3-line slice verbatim so
+      the first A/B stays reproducible.
+    - evidence='window_code_only' keeps the SAME ±3-line slice, only stripping
+      comments/docstrings. This isolates the de-comment variable: comparing it
+      to 'full_code_only' changes ONLY context size, comparing to 'window'
+      changes ONLY comments.
+    - evidence='full_code_only' extracts the complete enclosing function with
+      comments/docstrings stripped uniformly. real_cve_tool_call records have
+      no full source (only a 5-line window), so they fall back to that window
+      with comments stripped and are marked evidence_basis='window_only' —
+      never misrepresented as a full function.
+    """
+    if mask not in VALID_MASKS:
+        raise ValueError(f'mask must be one of {VALID_MASKS}')
+    if evidence not in VALID_EVIDENCE:
+        raise ValueError(f'evidence must be one of {VALID_EVIDENCE}')
+    from evidence_context import build_evidence, strip_comments
     tool_calls = tool_call_index()
-    contexts, labels = [], {}
+    contexts, labels, origins_by_id = [], {}, {}
     for record in records:
         finding = record['finding']
         location = finding.get('locations', [{}])[0]
         path = finding.get('path') or location.get('path', '')
-        rule = finding.get('rule_id')
-        cwe, category, default_severity = RULE_META.get(rule, (finding.get('cwe', ''), finding.get('category', 'other'), 'medium'))
-        severity = str(finding.get('severity', default_severity)).lower()
+        cwe_raw = finding.get('cwe')
+        category_raw = finding.get('category')
+        origins = {
+            'cwe': 'scanner_normalized' if cwe_raw else 'missing',
+            'category': 'scanner_normalized' if category_raw else 'missing',
+            'title': 'scanner_normalized' if (finding.get('title') or finding.get('message')) else 'missing',
+            'severity': 'scanner_normalized' if finding.get('severity') else 'missing',
+            'source': 'scanner_normalized',
+        }
+        origins_by_id[record['id']] = origins
+        # Empty string, never a sentinel the model could read as a class label.
+        cwe = str(cwe_raw) if cwe_raw else ''
+        category = str(category_raw) if category_raw else ''
+        severity_raw = finding.get('severity')
+        severity = str(severity_raw).lower() if severity_raw else ''
         severity = {'error': 'high', 'warning': 'medium'}.get(severity, severity)
-        title = finding.get('title') or finding.get('message') or 'Scanner finding'
-        lines = source_lines(record, tool_calls)
+        title = finding.get('title') or finding.get('message') or ''
+        if mask in ('title', 'both'):
+            title = ''
+        if mask in ('metadata', 'both'):
+            cwe, category = '', ''
+        language = LANGUAGES.get(Path(path).suffix.lower(), '')
+        if evidence in ('window', 'window_code_only'):
+            lines = source_lines(record, tool_calls)  # identical ±3-line range
+            if evidence == 'window_code_only':
+                from evidence_context import strip_window_comments
+                lines = strip_window_comments(lines, language)
+            evidence_basis = 'window_3_lines' if evidence == 'window' else 'window_3_lines_code_only'
+        else:
+            all_lines, finding_line = full_source_lines(record, tool_calls)
+            if record['source'] == 'real_cve_tool_call':
+                # No full source available: strip comments from the window only.
+                lines = [{'line': item['line'], 'text': strip_comments(item['text'], language)}
+                         for item in all_lines]
+                lines = [l for l in lines if l['text'].strip()]
+                evidence_basis = 'window_only_no_full_source'
+            else:
+                lines = build_evidence('\n'.join(all_lines), finding_line, language)
+                evidence_basis = 'full_function_code_only'
         contexts.append({
             'id': record['id'],
             'title': str(title)[:300],
@@ -117,9 +194,12 @@ def build_records(records: list[dict]) -> tuple[list[dict], dict[str, str]]:
             'origin_hint': Path(path).parent.as_posix()[:200],
             'source': lines,
             'source_truncated': any(len(item['text']) >= 100 for item in lines),
+            # NOTE: metadata_origin AND evidence_basis are audit-only; neither
+            # may enter the model payload as they could separate classes.
         })
+        origins_by_id[record['id']]['evidence_basis'] = evidence_basis
         labels[record['id']] = record['human_label']
-    return contexts, labels
+    return contexts, labels, origins_by_id
 
 
 def metrics(records: list[dict], verdicts: dict, labels: dict[str, str]) -> dict:
@@ -186,7 +266,7 @@ def paired_mcnemar(records: list[dict], before: dict, after: dict) -> dict:
 
 async def run(input_path: Path, out: Path) -> dict:
     gold = load_jsonl(input_path)
-    contexts, labels = build_records(gold)
+    contexts, labels, metadata_origins = build_records(gold)
     config = Config.load(str(ROOT / 'localguard.local.json'))
     registry = ToolRegistry(config)
     try:
@@ -209,6 +289,8 @@ async def run(input_path: Path, out: Path) -> dict:
             'baseline': {'conservative': False},
             'conservative': {'conservative': True},
         },
+        # Audit only — never sent to the model.
+        'metadata_origin_audit': metadata_origins,
         'baseline': metrics(contexts, baseline, labels),
         'conservative': metrics(contexts, conservative, labels),
         'paired_mcnemar': paired,
