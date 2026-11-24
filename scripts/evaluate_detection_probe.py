@@ -9,13 +9,20 @@ training validator correctly refuses to promote them to training samples.
 Uses the SAME detection SYSTEM prompt as evaluate_holdout.py (imported, not
 copied) so the probe is comparable to the existing detection baseline. Runs
 through the live llama-server via localguard's model layer (same Q4_K_M model,
-temperature 0, thinking off). The transformers-vs-HTTP path difference is
-disclosed in the report.
+temperature 0, thinking off).
+
+CONFOUND DISCLOSED: the samples carry comment lines that tell the reader the
+code is a static fixture and/or explain why it is safe (e.g. "STATIC FIXTURE
+ONLY", "User text is HTML-escaped"). The with-hints baseline therefore cannot
+isolate genuine false-alarm behaviour. run() also executes a hint-stripped
+variant (those comment lines removed) as a confound control. Neither result
+is a triage-quality claim.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 import sys
 
@@ -25,16 +32,69 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 
 from evaluate_holdout import SYSTEM  # same detection prompt, not a copy
 from localguard.config import Config
-from localguard.model import _json
 from localguard.registry import ToolRegistry
 
 PROBE = ROOT / '.workbuddy' / 'pilot_clean' / 'pilot_clean_evidence.jsonl'
 
+# Comment lines that disclose "this is a fixture" or explain why the code is
+# safe. Stripping them is the confound control for the detection probe.
+_HINT_COMMENT = re.compile(
+    r'^\s*(?:#|//|/\*|\*)\s*'
+    r'(?:STATIC FIXTURE ONLY|Never import or execute|User text is|User content is|'
+    r'.*auto-escapes|.*HTML-escaped|.*escaped before|.*never innerHTML|'
+    r'.*no raw concatenation|.*sanitiz|.*safe\b)',
+    re.I,
+)
 
-def sample_text(record: dict) -> str:
+
+def is_hint_comment(text: str) -> bool:
+    return bool(_HINT_COMMENT.match(text))
+
+
+def sample_text(record: dict, strip_hints: bool = False) -> str:
     lines = record['result'].get('lines', [])
+    if strip_hints:
+        lines = [ln for ln in lines if not is_hint_comment(ln['text'])]
     evidence = '\n'.join(f"{ln['line']}: {ln['text']}" for ln in lines)
     return 'File: ' + record['id'].replace('clean-pilot-', '') + '\n' + evidence
+
+
+async def _run_group(model, rows: list[dict], strip_hints: bool) -> dict:
+    results = []
+    for r in rows:
+        messages = [
+            {'role': 'system', 'content': SYSTEM},
+            {'role': 'user', 'content': sample_text(r, strip_hints=strip_hints)},
+        ]
+        raw = ''
+        try:
+            # structured=False so decoding matches evaluate_holdout's baseline.
+            # NOTE: _infer() ignores max_tokens when structured=False and pins
+            # max_tokens=512 in the payload; the old max_tokens=256 argument had
+            # no effect and has been removed. evaluate_holdout uses transformers
+            # max_new_tokens=192 — a real token-budget difference (512 vs 192).
+            response = await model._infer(messages, [], '8gb', structured=False, release=False)
+            raw = response['choices'][0]['message']['content']
+        except Exception as exc:
+            results.append({'id': r['id'], 'error': f'{type(exc).__name__}: {str(exc)[:100]}'})
+            continue
+        invented = None
+        try:
+            data = json.loads(raw)
+            invented = bool(data.get('issues')) if isinstance(data, dict) and isinstance(data.get('issues'), list) else None
+        except (ValueError, TypeError):
+            invented = None
+        results.append({'id': r['id'], 'model_reported_issue': invented,
+                        'raw_valid_json': invented is not None})
+    valid = [r for r in results if r.get('model_reported_issue') is not None]
+    false_alarms = [r for r in valid if r['model_reported_issue']]
+    return {
+        'samples': len(rows),
+        'valid_json': len(valid),
+        'false_alarms': len(false_alarms),
+        'false_alarm_rate': round(len(false_alarms) / len(valid), 4) if valid else None,
+        'per_sample': results,
+    }
 
 
 async def run(out: Path | None) -> dict:
@@ -43,45 +103,19 @@ async def run(out: Path | None) -> dict:
         'probe records must be explicitly marked synthetic; never train on them'
     cfg = Config.load(str(ROOT / 'localguard.local.json'))
     registry = ToolRegistry(cfg)
-    results = []
     try:
         model = registry.get_model()
-        for r in rows:
-            messages = [
-                {'role': 'system', 'content': SYSTEM},
-                {'role': 'user', 'content': sample_text(r)},
-            ]
-            raw = ''
-            try:
-                # evaluate_holdout relies on the prompt for JSON (no response_format);
-                # keep structured=False so decoding matches that baseline.
-                response = await model._infer(messages, [], '8gb', structured=False, release=False,
-                                              max_tokens=256)
-                raw = response['choices'][0]['message']['content']
-            except Exception as exc:
-                results.append({'id': r['id'], 'error': f'{type(exc).__name__}: {str(exc)[:100]}'})
-                continue
-            invented = None
-            try:
-                data = json.loads(raw)
-                invented = bool(data.get('issues')) if isinstance(data, dict) and isinstance(data.get('issues'), list) else None
-            except (ValueError, TypeError):
-                invented = None
-            results.append({'id': r['id'], 'model_reported_issue': invented,
-                            'raw_valid_json': invented is not None})
+        with_hints = await _run_group(model, rows, strip_hints=False)
+        hint_stripped = await _run_group(model, rows, strip_hints=True)
     finally:
         await registry.close()
-    valid = [r for r in results if r.get('model_reported_issue') is not None]
-    false_alarms = [r for r in valid if r['model_reported_issue']]
     report = {
         'kind': 'detection_probe_on_synthetic_clean_samples',
-        'warning': 'DETECTION task, not triage. Samples have NO scanner finding to triage; this measures invention of findings in safe code only.',
-        'path_disclosure': 'same detection SYSTEM prompt as evaluate_holdout.py; inference via live llama-server HTTP (Q4_K_M, temp=0, thinking off) instead of that script transformers path; model weights identical.',
-        'samples': len(rows),
-        'valid_json': len(valid),
-        'false_alarms': len(false_alarms),
-        'false_alarm_rate': round(len(false_alarms) / len(valid), 4) if valid else None,
-        'per_sample': results,
+        'warning': 'DETECTION task, not triage. Samples have NO scanner finding to triage; this measures invention of findings in safe code only. WITH-HINTS result is confounded by fixture/safety comment lines; use hint_stripped as the confound control. Neither is a triage-quality result.',
+        'path_disclosure': 'same detection SYSTEM prompt as evaluate_holdout.py; inference via live llama-server HTTP (Q4_K_M, temp=0, enable_thinking=False) instead of that script transformers path; model weights identical. Token budget DIFFERS: _infer(structured=False) pins max_tokens=512 in the HTTP payload (the previous max_tokens=256 argument was ignored and has been removed); evaluate_holdout uses transformers max_new_tokens=192.',
+        'confound': 'sample comment lines include "STATIC FIXTURE ONLY. Never import or execute." and safety explanations ("HTML-escaped", "auto-escapes", "never innerHTML"); hints may steer the model to output no issues.',
+        'with_hints': with_hints,
+        'hint_stripped': hint_stripped,
     }
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if out:
