@@ -36,6 +36,26 @@ def test_align_marks_file_only_as_uncertain():
     assert r['proposed_label'] == 'uncertain'
 
 
+def test_function_cwe_alignment_on_real_vulnshop():
+    """Layer 1: enclosing function + CWE must recover a high-confidence positive.
+
+    Line ranges in the ground truth are approximate; the finding may land
+    dozens of lines away yet still be in the documented vulnerable function.
+    """
+    import json
+    source = ROOT / 'repos' / 'code-safety' / 'vulnerable-app'
+    data = {'target': str(source),
+            'issues': [_issue('ISSUE-FN', 'authentication/views.py', 73)]}
+    rows = align_positives(data, source_root=source)
+    assert len(rows) >= 1
+    r = rows[0]
+    assert r['provenance']['match_quality'] == 'function_cwe'
+    assert r['provenance']['enclosing_function'] == 'login_view'
+    assert r['provenance']['ground_truth_ids'] == ['VULN-001']
+    assert r['proposed_label'] == 'likely_true'
+    assert r['provenance']['code_commit']  # commit pinned for reproducibility
+
+
 def test_candidate_is_unlabelled_and_review_ready():
     c = make_candidate(_issue('ISSUE-B', 'a.py', 1), 'probe', {}, 'likely_false')
     assert c['needs_review'] is True
