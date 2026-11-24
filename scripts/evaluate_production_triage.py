@@ -61,6 +61,37 @@ def gold_to_context(record: dict) -> dict:
     }
 
 
+def _is_placeholder(item: dict) -> bool:
+    """Identify a production self-heal placeholder by its FIXED text.
+
+    NOTE: this identifies the placeholder, NOT its generation cause. The
+    production path inserts the same text for missing/null/id-mismatched
+    entries and may drop triage fields from an otherwise real explanation.
+    Without the raw batch response the two cannot be distinguished here.
+    """
+    return (item.get('explanation') == PLACEHOLDER_EXPLANATION
+            and item.get('remediation') == PLACEHOLDER_REMEDIATION)
+
+
+def _field_completeness(items: list[dict]) -> dict:
+    """Count the five output fields over items. Iterates the FIXED tuple.
+
+    Regression: the old inline code iterated `field_stats` (which contains the
+    not-yet-computed 'all_fields' key), so all() always failed and all_fields
+    stayed 0. This is the single source of truth used by run() AND its tests.
+    """
+    stats = {k: 0 for k in OUTPUT_FIELDS}
+    stats['all_fields'] = 0
+    for item in items:
+        present = [item.get(k) not in (None, '') for k in OUTPUT_FIELDS]
+        for key, ok in zip(OUTPUT_FIELDS, present):
+            if ok:
+                stats[key] += 1
+        if all(present):
+            stats['all_fields'] += 1
+    return stats
+
+
 def _metrics(results: list[dict]) -> dict:
     """Separate COVERAGE (verdict provided) from triage QUALITY.
 
@@ -97,12 +128,18 @@ def _metrics(results: list[dict]) -> dict:
         'missing_verdict': missing, 'triaged_samples': triaged,
         'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn, 'uncertain': unc,
         # CONDITIONAL quality metrics — over the verdict-present subset only.
-        # These must NOT be presented as whole-sample FPR.
+        # These must NOT be presented as whole-sample FPR/recall.
         'conditional_accuracy': round((tp + tn) / triaged, 4) if triaged else None,
         'conditional_precision': round(tp / (tp + fp), 4) if tp + fp else None,
         'conditional_recall': round(tp / (tp + fn), 4) if tp + fn else None,
         'conditional_fpr': round(fp / (fp + tn), 4) if fp + tn else None,
         'uncertain_rate': round(unc / triaged, 4) if triaged else None,
+        # WHOLE-positive-sample safety view: abstentions count as NOT caught.
+        # Without this, conditional_recall can read 100% while real positives
+        # were skipped — the exact failure mode we must not hide.
+        'positive_abstention': round((len(pos) - pos_cov) / len(pos), 4) if pos else None,
+        'all_sample_recall': round(tp / len(pos), 4) if pos else None,
+        'all_sample_false_negative': len(pos) - tp,
         # WHOLE-sample view: negatives that were falsely called true, plus
         # negatives the model abstained on (no verdict) — both are failures
         # from a conservative triage standpoint.
@@ -161,9 +198,14 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
     # self-heal events — the production path logs these but does not surface
     # them in its return value.
     log_events, raw_responses = [], []
+    server_process = {'observed': False, 'note': 'not captured (server process may stop with registry)'}
     started = time.time()
     try:
         model = registry.get_model()
+        # Capture OBSERVED server process BEFORE registry.close() — after close
+        # the model client may release the connection and the process query
+        # would observe nothing.
+        server_process = _server_process(cfg.model_endpoint)
         original_log, original_infer = model._log, model._infer
 
         def capture_log(event, **values):
@@ -175,16 +217,16 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
 
         async def capture_infer(messages, tools, tier, *args, **kwargs):
             resp = await original_infer(messages, tools, tier, *args, **kwargs)
-            # Capture a bounded, hashed record of each raw batch response so
-            # missing/placeholder entries can be audited. Full raw text is
-            # stored only up to a cap; the SHA-256 always covers the full body.
+            # Capture the FULL raw response for a local eval artifact (no cap)
+            # — a hash or head-only excerpt cannot explain a missing entry that
+            # occurred at the tail of the JSON. Full text stays local only.
             try:
                 content = resp['choices'][0]['message']['content']
                 raw_responses.append({'sha256': hashlib.sha256(content.encode()).hexdigest(),
                                       'chars': len(content),
-                                      'excerpt': str(content)[:800]})
+                                      'content': content})
             except (KeyError, IndexError, TypeError):
-                raw_responses.append({'sha256': None, 'chars': 0, 'excerpt': ''})
+                raw_responses.append({'sha256': None, 'chars': 0, 'content': ''})
             return resp
 
         model._log = capture_log
@@ -195,23 +237,11 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
     elapsed = round(time.time() - started, 2)
     json_errors = [e for e in log_events if e['event'] == 'model_explanation_json_error']
 
-    results, field_stats = [], {k: 0 for k in OUTPUT_FIELDS}
-    field_stats['all_fields'] = 0
-    placeholder_ids = []
+    results, placeholder_ids = [], []
     for r in rows:
         item = verdicts.get(r['context']['id']) or {}
         present = {k: item.get(k) not in (None, '') for k in OUTPUT_FIELDS}
-        for key in OUTPUT_FIELDS:  # iterate the FIXED field tuple, never field_stats
-            if present[key]:
-                field_stats[key] += 1
-        if all(present.values()):
-            field_stats['all_fields'] += 1
-        # Production self-heal inserts fixed placeholder text when a finding
-        # is missing/null/id-mismatched. We can identify the placeholder, but
-        # WITHOUT the raw batch response we cannot say WHICH generation path
-        # caused it — record that as an explicit unknown, not a root cause.
-        is_placeholder = (item.get('explanation') == PLACEHOLDER_EXPLANATION
-                          and item.get('remediation') == PLACEHOLDER_REMEDIATION)
+        is_placeholder = _is_placeholder(item)
         if is_placeholder:
             placeholder_ids.append(r['context']['id'])
         results.append({'id': r['context']['id'], 'expected': r['expected'], 'cwe': r['cwe'],
@@ -229,6 +259,12 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
                      if r['expected'] == 'likely_true'
                      and r['cwe'] in CRITICAL_CWE
                      and r['verdict'] != 'likely_true']
+    # Single source of truth for field counting — same function the tests call.
+    field_stats = _field_completeness(
+        [verdicts.get(r['context']['id']) or {} for r in rows])
+    # Actual batch size used by production explain_issues(triage=True).
+    batch_size = min(4, cfg.max_prompt_files)
+    n_batches = (len(rows) + batch_size - 1) // batch_size
     gguf = Path(cfg.model_path)
     report = {
         'kind': 'gold_v1_production_triage_eval',
@@ -244,22 +280,24 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
             ['git', 'log', '-1', '--format=%H', '--', str(Path(__file__).relative_to(ROOT))],
             cwd=ROOT, text=True).strip() or None,
         'runtime_head_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
-        # Observed server process (best-effort, read-only); not a scripted constant.
-        'server_process': _server_process(cfg.model_endpoint),
-        'failed_adapter_loaded': _adapter_in_config(cfg),  # derived from config, not hardcoded
+        # Observed BEFORE registry.close(); may still be unobservable.
+        'server_process': server_process,
+        # Renamed: this is config evidence, NOT runtime load proof.
+        'failed_adapter_referenced_in_config': _adapter_in_config(cfg),
         'path': 'explain_issues(triage=True) — full schema, batching, parsing, degradation',
-        'batches': (len(rows) + 3) // 4,
+        'batch_size': batch_size,
+        'batches': n_batches,
         'elapsed_seconds': elapsed,
-        # RENAMED: this is batch-level JSON SYNTAX parse success, not a
-        # "first try vs self-heal retry" (production has no second inference).
+        # Batch-level JSON SYNTAX parse success (no retry in production).
         'batch_json_parse_success_rate': round(
-            (((len(rows) + 3) // 4) - len(json_errors)) / max(1, (len(rows) + 3) // 4), 4),
+            (n_batches - len(json_errors)) / max(1, n_batches), 4),
         'batch_json_error_events': json_errors,
-        'raw_batch_responses': raw_responses,  # bounded excerpt + full-body sha256
+        'raw_batch_responses': raw_responses,  # FULL raw content + sha256, local only
         'placeholder_cause_note': (
-            '6 placeholder entries identified by fixed text. Generation cause '
-            '(missing/null/id-mismatch vs other) NOT captured — no full raw '
-            'response was retained for the first baseline run. See raw_batch_responses.'),
+            f'{len(placeholder_ids)} placeholder entries identified by fixed text. '
+            'Generation cause (missing/null/id-mismatch vs invalid-verdict drop) '
+            'cannot be distinguished from the final result alone; see '
+            'raw_batch_responses for this run\'s full model output.'),
         'placeholder_ids': placeholder_ids,
         'metrics': _metrics(results),
         'field_completeness': field_stats,
