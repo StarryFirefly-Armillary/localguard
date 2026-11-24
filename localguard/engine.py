@@ -454,13 +454,13 @@ class AuditEngine:
                         # transient SQLITE_READONLY under WAL lock contention.
                         self.store.log(event='model_triage', audit_id=job['id'], session=session,
                                        tier=tier, verdicts=triage_records)
-                    if want_triage:
-                        # Advisory reorder only: nothing is removed and severity is untouched.
-                        penalty = {'likely_true': 0, 'uncertain': 1, 'likely_false': 2}
-                        result['issues'].sort(key=lambda i: (
-                            penalty.get((i.get('triage') or {}).get('verdict'), 1),
-                            SEVERITIES[i['severity']], -i['confidence'],
-                            i['locations'][0]['path'], i['locations'][0]['line'], i['id']))
+                    # Model triage is ADVISORY ONLY: it never reorders findings.
+                    # Deterministic rank() order (severity, scanner confidence,
+                    # path, line, id) is preserved so verified high-risk findings
+                    # cannot be demoted by a model verdict — including a
+                    # high-confidence false positive. The verdict stays on the
+                    # issue ('triage' field), in the audit log, and in the UI as
+                    # a badge / filter / review aid.
                     result['coverage']['model_explanation'] = 'completed'
                     result['coverage']['explained_count'] = sum(
                         1 for i in result['issues'] if i.get('ai_explanation') == 'done')
