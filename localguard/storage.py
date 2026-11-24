@@ -111,11 +111,21 @@ class Store:
         # client's own status refreshes.
         SILENT_TOOLS = {'get_audit_status', 'list_audits', 'view_file',
                         'list_tree', 'get_ast', 'run_scanner'}
+        # Filter UI-noise in SQL, not after LIMIT. Otherwise a page filled by
+        # silent rows returns nothing and the client never advances its cursor,
+        # so later real events are starved forever.
+        silent_placeholders = ','.join('?' for _ in SILENT_TOOLS)
+        sql = (
+            "SELECT id, time, payload FROM logs WHERE id>? "
+            "AND json_extract(payload,'$.audit_id')=? "
+            "AND json_extract(payload,'$.event') NOT IN (" + ','.join('?' for _ in SILENT_EVENTS) + ") "
+            "AND NOT (json_extract(payload,'$.event')='tool_call' "
+            "         AND json_extract(payload,'$.tool_name') IN (" + silent_placeholders + ")) "
+            "ORDER BY id ASC LIMIT ?"
+        )
+        params = (int(since_id), audit_id, *SILENT_EVENTS, *SILENT_TOOLS, int(limit))
         with self.connect() as db:
-            rows = db.execute(
-                "SELECT id, time, payload FROM logs WHERE id>? "
-                "AND json_extract(payload,'$.audit_id')=? ORDER BY id ASC LIMIT ?",
-                (int(since_id), audit_id, int(limit))).fetchall()
+            rows = db.execute(sql, params).fetchall()
         entries = []
         for row in rows:
             try:
@@ -323,10 +333,14 @@ class Store:
                     return result
         return None
 
-    def cache_get(self, key: str):
+    def cache_get(self, key: str, ttl: int = 86400):
+        # Enforce TTL on read as well as on put: a stale entry must never be
+        # served just because cache_put() has not run again to sweep it.
         with self.connect() as db:
-            row = db.execute('SELECT payload FROM scan_cache WHERE key=?', (key,)).fetchone()
-            return json.loads(row['payload']) if row else None
+            row = db.execute('SELECT payload, created FROM scan_cache WHERE key=?', (key,)).fetchone()
+            if not row or time.time() - row['created'] > ttl:
+                return None
+            return json.loads(row['payload'])
 
     def cache_put(self, key: str, payload: dict, ttl: int = 86400) -> None:
         with self.connect() as db:
