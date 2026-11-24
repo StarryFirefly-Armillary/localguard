@@ -83,7 +83,8 @@ def prepare_target(spec: dict, scratch: Path) -> tuple[Path, str, str]:
     import io
     import tarfile
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-        try:/n            tar.extractall(target, filter="data")
+        try:
+            tar.extractall(target, filter="data")
         except TypeError:  # Python < 3.12
             tar.extractall(target)
     return target, commit, 'localguard_parent_archive'
