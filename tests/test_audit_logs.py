@@ -48,3 +48,20 @@ async def test_logs_route_is_session_scoped(tmp_path):
         from localguard.paths import BoundaryError
         with pytest.raises(ValueError, match='Unknown audit_id'):
             registry.store.get(mine['audit_id'], 'foreign-session')
+
+
+def test_silent_events_cannot_starve_later_real_events(tmp_path):
+    """A page full of UI-poll noise must not hide the real event behind it:
+    filtering has to happen before LIMIT so the cursor can advance."""
+    (tmp_path / 'state').mkdir()
+    store = Store(tmp_path / 'state')
+    # More than one default page of silent poll events.
+    for _ in range(150):
+        store.log(event='tool_call', audit_id='A', tool_name='get_audit_status', validation='passed')
+    store.log(event='tool_evidence', audit_id='A', summary='raw source')
+    # The real event after all the noise.
+    store.log(event='audit_failed', audit_id='A', error='real failure')
+
+    logs = store.recent_logs('A', limit=10)
+    assert [e['event'] for e in logs] == ['audit_failed'], logs
+    assert logs[0]['message']
