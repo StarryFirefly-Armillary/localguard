@@ -4,6 +4,7 @@ import asyncio
 from contextlib import contextmanager
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -13,6 +14,53 @@ from .git_evidence import OID, REF, diff_changes, git_command, revision_tree, wr
 from .paths import BoundaryError, PathPolicy, safe_relative
 from .process import run
 from .reporting import SEVERITIES, EvidenceError, compare_baseline, from_finding, rank
+
+# Files the dependency scanners (grype/pip-audit) need to locate exact package
+# versions. discovery.classify() treats them as non-source; keep them in the
+# snapshot when dependency scanning is requested so unlocated CVEs are not
+# silently dropped. Code scanners on these files are harmless (verified: zero
+# patterns/semgrep findings on lockfiles).
+DEPENDENCY_MANIFESTS = frozenset({
+    'package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
+    'poetry.lock', 'gemfile.lock', 'go.sum', 'cargo.lock', 'composer.lock',
+})
+
+
+def scan_cache_key(scanner: str, hashes: dict, config, rules_dir: Path) -> str:
+    """Stable fingerprint of everything that can change a scanner result.
+
+    Includes the scanner id, the exact snapshot digests, ALL rule/config files
+    (not just *.json — gitleaks.toml and grype.yaml matter too), the scanner
+    binary's path/size/mtime, and the Grype DB fingerprint when applicable.
+    Missing tools/files use a stable marker so they do not collide with a
+    real fingerprint.
+    """
+    def stamp(path: Path) -> str:
+        try:
+            st = path.stat()
+            return f'{path.name}:{st.st_size}:{st.st_mtime_ns}'
+        except OSError:
+            return f'{path.name}:missing'
+
+    rule_stamp = '|'.join(stamp(p) for p in sorted(rules_dir.iterdir()) if p.is_file())
+    binary = config.binaries.get(scanner, '')
+    binary_stamp = stamp(Path(binary)) if binary else 'no-binary'
+    db_stamp = ''
+    if scanner == 'grype':
+        # Same source of truth as scanners.py: the DB cache dir is supplied
+        # via this env var, not a Config field.
+        env_db = os.environ.get('GRYPE_DB_CACHE_DIR')
+        db_root = Path(env_db) if env_db else None
+        if db_root and db_root.is_dir():
+            try:
+                db_stamp = '|'.join(stamp(p) for p in sorted(db_root.iterdir()))
+            except OSError:
+                db_stamp = 'db-unreadable'
+        else:
+            db_stamp = 'no-db'
+    material = '|'.join((scanner, rule_stamp, binary_stamp, db_stamp,
+                         '|'.join(f'{k}:{v}' for k, v in sorted(hashes.items()))))
+    return hashlib.sha256(material.encode('utf-8')).hexdigest()
 
 
 class AuditEngine:
@@ -69,7 +117,8 @@ class AuditEngine:
         return destination.resolve()
 
     @contextmanager
-    def snapshot(self, root, revision=None, exclude_paths=None, auto_exclude=True):
+    def snapshot(self, root, revision=None, exclude_paths=None, auto_exclude=True,
+                 keep_manifests=False):
         # Cleanup of the throwaway scan snapshot must never abort an audit. On
         # Windows an OCaml scanner may leave read-only temp files, and a
         # host-level rmtree shim can refuse bulk deletes. Neither affects the
@@ -112,6 +161,11 @@ class AuditEngine:
                     try:
                         reason = classify(path,root)
                     except (ValueError,OSError):
+                        reason = None
+                    # Keep dependency manifests when dependency scanning is on;
+                    # otherwise grype cannot locate a CVE to an exact manifest
+                    # line and drops the match (unlocated-CVE omission).
+                    if reason and keep_manifests and path.name.lower() in DEPENDENCY_MANIFESTS:
                         reason = None
                     if reason:
                         auto_reasons[path.relative_to(root).as_posix()] = reason
@@ -267,7 +321,8 @@ class AuditEngine:
             coverage = {}
             async with self.store.resource():
                 with self.snapshot(root,revision,args.get('exclude_paths'),
-                                   args.get('auto_exclude',True)) as (snapshot,hashes,skipped):
+                                   args.get('auto_exclude',True),
+                                   keep_manifests=args.get('include_dependencies',True)) as (snapshot,hashes,skipped):
                     result['warnings'] += skipped
                     result['coverage'] = {'files':len(hashes),'excluded_files':len(skipped),'scanners':coverage,'depth':depth}
                     for index,scanner in enumerate(selected):
@@ -278,11 +333,7 @@ class AuditEngine:
                         output = None
                         try:
                             rules_dir = Path(__file__).parent / 'rules'
-                            rule_stamp = '|'.join(f'{p.name}:{p.stat().st_mtime_ns}'
-                                                  for p in sorted(rules_dir.glob('*.json')))
-                            material = scanner + '|' + rule_stamp + '|' + '|'.join(
-                                f'{k}:{v}' for k, v in sorted(hashes.items()))
-                            cache_key = hashlib.sha256(material.encode('utf-8')).hexdigest()
+                            cache_key = scan_cache_key(scanner, hashes, self.config, rules_dir)
                             output = self.store.cache_get(cache_key)
                         except Exception:
                             output = None
