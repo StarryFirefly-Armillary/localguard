@@ -33,6 +33,11 @@ from localguard.registry import ToolRegistry
 VERDICTS = {'likely_true', 'likely_false', 'uncertain'}
 # Critical CWEs that must not be missed (safety regressions).
 CRITICAL_CWE = {'CWE-78', 'CWE-89', 'CWE-611', 'CWE-918', 'CWE-502', 'CWE-22'}
+# The five fields the production explain_issues schema asks for.
+OUTPUT_FIELDS = ('explanation', 'remediation', 'verdict', 'confidence', 'reason')
+# Production self-heal placeholder texts (fixed strings, not model output).
+PLACEHOLDER_EXPLANATION = '模型未提供说明，请依据下方证据人工判断。'
+PLACEHOLDER_REMEDIATION = '暂无模型修复建议，请依据原始证据人工判断。'
 
 
 def gold_to_context(record: dict) -> dict:
@@ -79,20 +84,62 @@ def _metrics(results: list[dict]) -> dict:
             fn += pos; tn += not pos
     n = len(results)
     triaged = n - missing  # verdict present (incl. uncertain)
+    pos = [r for r in results if r['expected'] == 'likely_true']
+    neg = [r for r in results if r['expected'] == 'likely_false']
+    pos_cov = sum(1 for r in pos if r['verdict'] is not None)
+    neg_cov = sum(1 for r in neg if r['verdict'] is not None)
     return {
-        'samples': n,
-        'verdict_coverage': round(triaged / n, 4) if n else None,
-        'missing_verdict': missing,
-        'triaged_samples': triaged,
+        'samples': n, 'positive_samples': len(pos), 'negative_samples': len(neg),
+        'verdict_completeness': round(triaged / n, 4) if n else None,
+        'positive_coverage': round(pos_cov / len(pos), 4) if pos else None,
+        'negative_coverage': round(neg_cov / len(neg), 4) if neg else None,
+        'negative_abstention': round((len(neg) - neg_cov) / len(neg), 4) if neg else None,
+        'missing_verdict': missing, 'triaged_samples': triaged,
         'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn, 'uncertain': unc,
-        # quality metrics are over the TRIAGED subset, not all samples
-        'accuracy': round((tp + tn) / triaged, 4) if triaged else None,
-        'precision': round(tp / (tp + fp), 4) if tp + fp else None,
-        'recall': round(tp / (tp + fn), 4) if tp + fn else None,
-        'fpr': round(fp / (fp + tn), 4) if fp + tn else None,
+        # CONDITIONAL quality metrics — over the verdict-present subset only.
+        # These must NOT be presented as whole-sample FPR.
+        'conditional_accuracy': round((tp + tn) / triaged, 4) if triaged else None,
+        'conditional_precision': round(tp / (tp + fp), 4) if tp + fp else None,
+        'conditional_recall': round(tp / (tp + fn), 4) if tp + fn else None,
+        'conditional_fpr': round(fp / (fp + tn), 4) if fp + tn else None,
         'uncertain_rate': round(unc / triaged, 4) if triaged else None,
-        'json_success_rate': round(triaged / n, 4) if n else None,
+        # WHOLE-sample view: negatives that were falsely called true, plus
+        # negatives the model abstained on (no verdict) — both are failures
+        # from a conservative triage standpoint.
+        'all_negative_false_positive': round(fp / len(neg), 4) if neg else None,
+        'all_negative_abstention': round((len(neg) - neg_cov) / len(neg), 4) if neg else None,
     }
+
+
+def _server_process(endpoint: str) -> dict:
+    """Best-effort OBSERVED server info (PID + command line), not a constant."""
+    info = {'observed': False, 'pid': None, 'command_line': None, 'note': None}
+    try:
+        port = int(str(endpoint).rstrip('/').rsplit(':', 1)[-1])
+        out = subprocess.check_output(
+            ['powershell', '-NoProfile', '-Command',
+             f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue "
+             "| Select-Object -First 1 -ExpandProperty OwningProcess"],
+            text=True, timeout=15).strip()
+        if out.isdigit():
+            info['pid'] = int(out)
+            cmd = subprocess.check_output(
+                ['powershell', '-NoProfile', '-Command',
+                 f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {out}').CommandLine"],
+                text=True, timeout=15).strip()
+            info['command_line'] = cmd[:500] if cmd else None
+            info['observed'] = True
+    except Exception as exc:
+        info['note'] = f'{type(exc).__name__}: {str(exc)[:100]}'
+    return info
+
+
+def _adapter_in_config(cfg) -> bool:
+    """Derive adapter usage from config, not a hardcoded False."""
+    blob = json.dumps({k: getattr(cfg, k, None) for k in
+                       ('model_path', 'model_4gb_path', 'model_name', 'model_endpoint')},
+                      ensure_ascii=False).lower()
+    return 'adapter-gold-v1-1ep' in blob
 
 
 async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
@@ -113,11 +160,11 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
     # Hook the production logger to capture FIRST-TRY JSON errors and
     # self-heal events — the production path logs these but does not surface
     # them in its return value.
-    log_events = []
+    log_events, raw_responses = [], []
     started = time.time()
     try:
         model = registry.get_model()
-        original_log = model._log
+        original_log, original_infer = model._log, model._infer
 
         def capture_log(event, **values):
             if event in ('model_explanation_json_error', 'model_explanation_error_trace'):
@@ -126,27 +173,58 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
                                    'excerpt': str(values.get('excerpt', ''))[:200]})
             return original_log(event, **values)
 
+        async def capture_infer(messages, tools, tier, *args, **kwargs):
+            resp = await original_infer(messages, tools, tier, *args, **kwargs)
+            # Capture a bounded, hashed record of each raw batch response so
+            # missing/placeholder entries can be audited. Full raw text is
+            # stored only up to a cap; the SHA-256 always covers the full body.
+            try:
+                content = resp['choices'][0]['message']['content']
+                raw_responses.append({'sha256': hashlib.sha256(content.encode()).hexdigest(),
+                                      'chars': len(content),
+                                      'excerpt': str(content)[:800]})
+            except (KeyError, IndexError, TypeError):
+                raw_responses.append({'sha256': None, 'chars': 0, 'excerpt': ''})
+            return resp
+
         model._log = capture_log
+        model._infer = capture_infer
         verdicts = await model.explain_issues([r['context'] for r in rows], '8gb', triage=True)
     finally:
         await registry.close()
     elapsed = round(time.time() - started, 2)
     json_errors = [e for e in log_events if e['event'] == 'model_explanation_json_error']
 
-    results, field_stats = [], {'explanation': 0, 'remediation': 0, 'verdict': 0,
-                                'confidence': 0, 'reason': 0, 'all_fields': 0}
+    results, field_stats = [], {k: 0 for k in OUTPUT_FIELDS}
+    field_stats['all_fields'] = 0
+    placeholder_ids = []
     for r in rows:
         item = verdicts.get(r['context']['id']) or {}
-        for key in ('explanation', 'remediation', 'verdict', 'confidence', 'reason'):
-            if item.get(key) not in (None, ''):
+        present = {k: item.get(k) not in (None, '') for k in OUTPUT_FIELDS}
+        for key in OUTPUT_FIELDS:  # iterate the FIXED field tuple, never field_stats
+            if present[key]:
                 field_stats[key] += 1
-        if all(item.get(k) not in (None, '') for k in field_stats):
+        if all(present.values()):
             field_stats['all_fields'] += 1
+        # Production self-heal inserts fixed placeholder text when a finding
+        # is missing/null/id-mismatched. We can identify the placeholder, but
+        # WITHOUT the raw batch response we cannot say WHICH generation path
+        # caused it — record that as an explicit unknown, not a root cause.
+        is_placeholder = (item.get('explanation') == PLACEHOLDER_EXPLANATION
+                          and item.get('remediation') == PLACEHOLDER_REMEDIATION)
+        if is_placeholder:
+            placeholder_ids.append(r['context']['id'])
         results.append({'id': r['context']['id'], 'expected': r['expected'], 'cwe': r['cwe'],
                         'verdict': item.get('verdict'), 'confidence': item.get('confidence'),
-                        'explanation_chars': len(str(item.get('explanation', ''))),
-                        'remediation_chars': len(str(item.get('remediation', ''))),
-                        'reason_chars': len(str(item.get('reason', '')))})
+                        'verdict_present': present['verdict'],
+                        'confidence_present': present['confidence'],
+                        'reason_present': present['reason'],
+                        'is_placeholder': is_placeholder,
+                        # store the actual field values (not just char counts)
+                        # so the artifact is independently recomputable.
+                        'explanation': item.get('explanation'),
+                        'remediation': item.get('remediation'),
+                        'reason': item.get('reason')})
     critical_miss = [r['id'] for r in results
                      if r['expected'] == 'likely_true'
                      and r['cwe'] in CRITICAL_CWE
@@ -159,17 +237,31 @@ async def run(eval_path: Path, out: Path, limit: int | None) -> dict:
         'eval_sha256': hashlib.sha256(eval_path.read_bytes()).hexdigest(),
         'model_endpoint': cfg.model_endpoint, 'model_path': cfg.model_path,
         'model_sha256': hashlib.sha256(gguf.read_bytes()).hexdigest() if gguf.is_file() else None,
-        'server_start_command': (
-            'llama-server.exe --model <cfg.model_path> --ctx-size 4096 --n-gpu-layers 99 '
-            '--host 127.0.0.1 --port 17865 --alias qwen3.5-4b'),
-        'failed_adapter_loaded': False,  # config does not reference adapter-gold-v1-1ep
-        'code_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+        'config_sha256': hashlib.sha256(
+            (ROOT / 'localguard.local.json').read_bytes()).hexdigest(),
+        'evaluator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        'evaluator_code_commit': subprocess.check_output(
+            ['git', 'log', '-1', '--format=%H', '--', str(Path(__file__).relative_to(ROOT))],
+            cwd=ROOT, text=True).strip() or None,
+        'runtime_head_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
+        # Observed server process (best-effort, read-only); not a scripted constant.
+        'server_process': _server_process(cfg.model_endpoint),
+        'failed_adapter_loaded': _adapter_in_config(cfg),  # derived from config, not hardcoded
         'path': 'explain_issues(triage=True) — full schema, batching, parsing, degradation',
         'batches': (len(rows) + 3) // 4,
         'elapsed_seconds': elapsed,
-        'first_try_json_success_rate': round((((len(rows) + 3) // 4) - len(json_errors)) / max(1, (len(rows) + 3) // 4), 4),
-        'json_error_events': json_errors,
-        'metrics': _metrics(results),  # json_success_rate here = post-self-heal verdict completeness
+        # RENAMED: this is batch-level JSON SYNTAX parse success, not a
+        # "first try vs self-heal retry" (production has no second inference).
+        'batch_json_parse_success_rate': round(
+            (((len(rows) + 3) // 4) - len(json_errors)) / max(1, (len(rows) + 3) // 4), 4),
+        'batch_json_error_events': json_errors,
+        'raw_batch_responses': raw_responses,  # bounded excerpt + full-body sha256
+        'placeholder_cause_note': (
+            '6 placeholder entries identified by fixed text. Generation cause '
+            '(missing/null/id-mismatch vs other) NOT captured — no full raw '
+            'response was retained for the first baseline run. See raw_batch_responses.'),
+        'placeholder_ids': placeholder_ids,
+        'metrics': _metrics(results),
         'field_completeness': field_stats,
         'critical_cwe_missed': critical_miss,
         'error_details': [r for r in results if r['verdict'] is None],
