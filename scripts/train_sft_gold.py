@@ -181,6 +181,8 @@ def main(argv=None) -> int:
             raise DatasetError('NF4 QLoRA needs a local CUDA environment')
         base = _absolute(str(a.base_model), directory=True)
         tokenizer = _base_tokenizer(base)
+        tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
+        tokenizer.padding_side = 'right'
         examples, lengths = [], []
         for row in rows:
             for t in _supervised_turns(tokenizer, row, a.max_length):
@@ -190,7 +192,13 @@ def main(argv=None) -> int:
         quant = transformers.BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type='nf4',
                                                 bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=dtype)
         config = transformers.AutoConfig.from_pretrained(str(base), local_files_only=True, trust_remote_code=False)
-        model = transformers.AutoModelForCausalLM.from_pretrained(
+        # Qwen3.5 registers as Qwen3_5ForConditionalGeneration; AutoModelForCausalLM
+        # would load the wrong class. Mirror training._model_class().
+        model_type = getattr(config, 'model_type', '')
+        cls = (transformers.AutoModelForImageTextToText
+               if model_type in ('qwen3_5', 'qwen3_5_moe')
+               else transformers.AutoModelForCausalLM)
+        model = cls.from_pretrained(
             str(base), config=config, local_files_only=True, trust_remote_code=False,
             quantization_config=quant, device_map={'': 0}, torch_dtype=dtype)
         model.config.use_cache = False
