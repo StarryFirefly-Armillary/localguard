@@ -31,15 +31,24 @@ def test_sample_text_builds_numbered_evidence():
     assert '1: # STATIC FIXTURE ONLY' in text
 
 
-def test_strip_hints_removes_fixture_and_safety_comments():
+def test_no_hint_removes_EVERY_comment_line():
+    # Strict control: any comment line is stripped, not just a keyword subset.
+    # These previously leaked (8/11 samples) under the old keyword regex.
     assert is_hint_comment('# STATIC FIXTURE ONLY. Never import or execute.')
     assert is_hint_comment('// html/template auto-escapes interpolated values')
+    assert is_hint_comment('    # Constant-time comparison of a SHA-256 digest.')
+    assert is_hint_comment('    // Bound parameter prevents SQL injection.')
+    assert is_hint_comment('    # Secret is read from the process environment.')
+    # real code (including inline "#" inside a value) must survive
     assert not is_hint_comment('from html import escape')
-    r = json.loads(PROBE.read_text(encoding='utf-8').splitlines()[0])
-    full = sample_text(r)
-    stripped = sample_text(r, strip_hints=True)
-    assert 'STATIC FIXTURE ONLY' not in stripped
-    assert 'HTML-escaped' not in stripped
-    # real code lines survive
-    assert 'escape(comment' in stripped
-    assert len(stripped) < len(full)
+    assert not is_hint_comment('    actual = hashlib.sha256(data).hexdigest()')
+    rows = [json.loads(l) for l in PROBE.read_text(encoding='utf-8').splitlines() if l.strip()]
+    for r in rows:
+        stripped = sample_text(r, strip_hints=True)
+        for ln in r['result']['lines']:
+            if is_hint_comment(ln['text']):
+                assert ln['text'].strip() not in stripped, f"comment leaked: {r['id']}"
+        # every real code line survives
+        for ln in r['result']['lines']:
+            if not is_hint_comment(ln['text']) and ln['text'].strip():
+                assert ln['text'].strip() in stripped, f"code lost: {r['id']}"

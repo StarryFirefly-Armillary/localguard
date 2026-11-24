@@ -13,10 +13,11 @@ temperature 0, thinking off).
 
 CONFOUND DISCLOSED: the samples carry comment lines that tell the reader the
 code is a static fixture and/or explain why it is safe (e.g. "STATIC FIXTURE
-ONLY", "User text is HTML-escaped"). The with-hints baseline therefore cannot
-isolate genuine false-alarm behaviour. run() also executes a hint-stripped
-variant (those comment lines removed) as a confound control. Neither result
-is a triage-quality claim.
+ONLY", "Constant-time comparison"). The with-hints baseline therefore cannot
+isolate genuine false-alarm behaviour. run() also executes a strict no-hint
+variant with ALL comment lines removed. Even so, both are EXPLORATORY probes
+on truncated static fixtures: a single-run flip shows sensitivity to prompt
+and context, NOT a causal proof, and neither result is a triage-quality claim.
 """
 from __future__ import annotations
 
@@ -36,19 +37,18 @@ from localguard.registry import ToolRegistry
 
 PROBE = ROOT / '.workbuddy' / 'pilot_clean' / 'pilot_clean_evidence.jsonl'
 
-# Comment lines that disclose "this is a fixture" or explain why the code is
-# safe. Stripping them is the confound control for the detection probe.
-_HINT_COMMENT = re.compile(
-    r'^\s*(?:#|//|/\*|\*)\s*'
-    r'(?:STATIC FIXTURE ONLY|Never import or execute|User text is|User content is|'
-    r'.*auto-escapes|.*HTML-escaped|.*escaped before|.*never innerHTML|'
-    r'.*no raw concatenation|.*sanitiz|.*safe\b)',
-    re.I,
-)
+# Strict no-hint control: strip ALL comment lines, not a keyword whitelist.
+# A prior regex only matched some safety phrases and left 8/11 samples with
+# hints like "Constant-time comparison" / "Bound parameter prevents SQL
+# injection", so it was a partial control at best. Any line that is a comment
+# in the fixture languages (#, //, block-comment continuation) is removed;
+# real code lines (imports, defs, calls, string literals) are preserved.
+_COMMENT_LINE = re.compile(r'^\s*(?:#|//|/\*|\*)')
 
 
 def is_hint_comment(text: str) -> bool:
-    return bool(_HINT_COMMENT.match(text))
+    """True if the line is a comment (stripped in the no-hint control)."""
+    return bool(_COMMENT_LINE.match(text))
 
 
 def sample_text(record: dict, strip_hints: bool = False) -> str:
@@ -106,16 +106,16 @@ async def run(out: Path | None) -> dict:
     try:
         model = registry.get_model()
         with_hints = await _run_group(model, rows, strip_hints=False)
-        hint_stripped = await _run_group(model, rows, strip_hints=True)
+        no_hint = await _run_group(model, rows, strip_hints=True)
     finally:
         await registry.close()
     report = {
         'kind': 'detection_probe_on_synthetic_clean_samples',
-        'warning': 'DETECTION task, not triage. Samples have NO scanner finding to triage; this measures invention of findings in safe code only. WITH-HINTS result is confounded by fixture/safety comment lines; use hint_stripped as the confound control. Neither is a triage-quality result.',
+        'warning': 'EXPLORATORY DETECTION probe, not triage and not a controlled experiment. Samples are truncated static fixtures with NO scanner finding. WITH-HINTS is confounded by fixture/safety comments; no_hint removes ALL comment lines. Any between-group flip is single-run, single-sample sensitivity to prompt/context — NOT causal proof. Neither result generalises to real code or measures triage quality.',
         'path_disclosure': 'same detection SYSTEM prompt as evaluate_holdout.py; inference via live llama-server HTTP (Q4_K_M, temp=0, enable_thinking=False) instead of that script transformers path; model weights identical. Token budget DIFFERS: _infer(structured=False) pins max_tokens=512 in the HTTP payload (the previous max_tokens=256 argument was ignored and has been removed); evaluate_holdout uses transformers max_new_tokens=192.',
-        'confound': 'sample comment lines include "STATIC FIXTURE ONLY. Never import or execute." and safety explanations ("HTML-escaped", "auto-escapes", "never innerHTML"); hints may steer the model to output no issues.',
+        'confound': 'sample comment lines include "STATIC FIXTURE ONLY. Never import or execute." and safety explanations ("Constant-time comparison", "Bound parameter prevents SQL injection", etc.); the no_hint group strips ALL comment lines so no safety prose reaches the model.',
         'with_hints': with_hints,
-        'hint_stripped': hint_stripped,
+        'no_hint': no_hint,
     }
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if out:
