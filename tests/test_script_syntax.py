@@ -26,7 +26,8 @@ def test_all_scripts_parse():
 def test_key_gold_tools_import():
     """Import (not just parse) the tools used to build the gold batch."""
     sys.path.insert(0, str(SCRIPTS))
-    for name in ('rebuild_fp_v2', 'collect_gold_candidates', 'export_review_samples'):
+    for name in ('rebuild_fp_v2', 'collect_gold_candidates', 'export_review_samples',
+                 'finalize_gold_v0', 'evaluate_gold_v0'):
         spec = importlib.util.spec_from_file_location(name, SCRIPTS / f'{name}.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)  # SyntaxError/ImportError surface here

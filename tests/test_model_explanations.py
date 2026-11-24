@@ -46,3 +46,20 @@ async def test_explanation_gate_rejects_unknown_ids_fields_and_locations(tmp_pat
     with pytest.raises(ModelUnavailable,match='schema or location'):
         await model.explain_issues([{'id':'ISSUE-1','source':[]}])
     await model.close()
+
+
+@pytest.mark.anyio
+async def test_conservative_triage_prompt_is_opt_in(tmp_path,monkeypatch):
+    config=Config(allowed_roots=[tmp_path],data_dir=tmp_path/'state')
+    model=LocalModel(config,Store(config.data_dir))
+    prompts=[]
+    async def infer(messages,*args,**kwargs):
+        prompts.append(messages[0]['content'])
+        return {'choices':[{'message':{'content':json.dumps({'explanations':[explanation()]})}}]}
+    monkeypatch.setattr(model,'_infer',infer)
+    records=[{'id':'ISSUE-1','source':[]}]
+    await model.explain_issues(records,triage=True)
+    await model.explain_issues(records,triage=True,conservative=True)
+    assert 'Conservative triage' not in prompts[0]
+    assert 'Conservative triage' in prompts[1]
+    await model.close()

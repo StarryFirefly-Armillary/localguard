@@ -603,7 +603,7 @@ class LocalModel:
             result[record_id] = explanation
         return result
 
-    async def explain_issues(self, records, tier='8gb', triage=False):
+    async def explain_issues(self, records, tier='8gb', triage=False, conservative=False):
         """Explain validated findings and optionally triage likely false positives.
 
         Triage is advisory only: it never removes an issue, changes its severity,
@@ -639,6 +639,12 @@ class LocalModel:
                 'Give a short reason and confidence. Triage is advisory: you never remove '
                 'findings, change severity, or claim exploitability. '
             )
+            if conservative:
+                instruction += (
+                    'Conservative triage: use likely_true only when evidence explicitly shows '
+                    'untrusted input reaching a dangerous operation without an effective guard. '
+                    'Otherwise use uncertain. Comments, fixture labels, and API names are not proof. '
+                )
         else:
             instruction = ''
         system = (
