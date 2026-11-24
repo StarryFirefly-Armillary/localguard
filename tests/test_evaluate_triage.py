@@ -32,6 +32,7 @@ def test_summarise_reports_coverage_and_verdicts():
     assert out['total_samples'] == 3
     assert out['triaged_count'] == 2
     assert out['coverage'] == round(2/3, 4)
-    assert out['mcnemar_b'] == 1 and out['mcnemar_c'] == 0
-    assert out['mcnemar_exact_p'] == 1.0
+    # Descriptive discordance, NOT a McNemar test (no second model to pair).
+    assert out['discordance'] == {'rejected_true': 1, 'false_alarm': 0}
+    assert 'mcnemar_exact_p' not in out
     assert out['verdict_distribution']['likely_true'] == 1
