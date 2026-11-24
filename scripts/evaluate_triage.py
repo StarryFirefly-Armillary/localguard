@@ -46,7 +46,15 @@ def wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
 
 
 def mcnemar_exact(b: int, c: int) -> float:
-    """Two-sided exact McNemar p-value for discordant counts (b, c)."""
+    """Two-sided exact McNemar p-value for discordant counts (b, c).
+
+    Kept as a pure, correct implementation of the statistic. NOTE: this
+    prototype does NOT use it as a formal test — there is only one model and
+    all labels are likely_true, so c is structurally 0 and p degenerates to
+    1.0. McNemar compares paired binary outcomes of two models/conditions;
+    comparing one model's predictions against fixed labels is not that
+    setting. Here b/c are reported only as descriptive discordance counts.
+    """
     n = b + c
     if n == 0:
         return 1.0
@@ -105,8 +113,10 @@ def summarise(rows: list[dict], verdicts: dict, labels: dict) -> dict:
         'correct': correct,
         'accuracy_point': round(correct / triaged, 4) if triaged else None,
         'wilson95': [round(lo, 4), round(hi, 4)],
-        'mcnemar_b': b, 'mcnemar_c': c,
-        'mcnemar_exact_p': round(mcnemar_exact(b, c), 4),
+        # Descriptive only — NOT a McNemar test. One model + all-true labels
+        # makes c structurally 0; a paired model-vs-model comparison is not
+        # possible with this sample set. See mcnemar_exact() docstring.
+        'discordance': {'rejected_true': b, 'false_alarm': c},
         'verdict_distribution': {
             v: sum(1 for r in evaluated if verdicts[r['id']].get('verdict') == v)
             for v in sorted(VERDICTS)
@@ -129,6 +139,10 @@ async def run(limit: int, out: Path | None) -> dict:
         'kind': 'triage_evaluation_prototype',
         'warning': 'SMOKE TEST ONLY — 6 samples, all likely_true candidates; no human negatives. NOT a model-quality conclusion. Do not use for retrain/deploy decisions.',
         'production_path': 'calls localguard.model.explain_issues(triage=True) directly; system prompt/schema/batch=4/max_tokens=2048/parse-degrade/model-version shared with production',
+        'metric_notes': {
+            'result_completeness': 'verdicts returned for every input id. explain_issues() self-heals missing entries with placeholder text, so this does NOT prove raw model JSON parsed cleanly; parse failures are logged as model_explanation_json_error in the audit log.',
+            'discordance': 'descriptive b/c counts only. NOT a McNemar test: one model, all-true labels => c is structurally 0 and the statistic has no comparative meaning.',
+        },
     }
     try:
         model = registry.get_model()
@@ -141,7 +155,9 @@ async def run(limit: int, out: Path | None) -> dict:
              'confidence': verdicts.get(r['id'], {}).get('confidence')}
             for r in records
         ]
-        report['json_format_success'] = len(verdicts) == len(records)
+        # Renamed from json_format_success: it measures returned-id coverage,
+        # not raw JSON parse success (production self-heals missing ids).
+        report['result_completeness'] = len(verdicts) == len(records)
     finally:
         await registry.close()
     text = json.dumps(report, ensure_ascii=False, indent=2)
