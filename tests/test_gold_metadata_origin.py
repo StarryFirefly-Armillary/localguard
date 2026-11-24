@@ -16,14 +16,16 @@ import evaluate_gold_v0 as ev
 
 
 def build_records(records, mask=None):
-    # Source evidence is irrelevant to metadata mapping; stub it so these
-    # tests need no checkout/commit (production path is covered elsewhere).
-    original = ev.source_lines
+    # Source evidence is irrelevant to metadata mapping; stub BOTH local-file
+    # readers so these tests pass in CI, where .localguard/ and .workbuddy/
+    # are absent. Production path is covered elsewhere.
+    original_lines, original_index = ev.source_lines, ev.tool_call_index
     ev.source_lines = lambda record, tool_calls: [{'line': 1, 'text': 'x = 1'}]
+    ev.tool_call_index = lambda: {}
     try:
         return ev.build_records(records, mask=mask)
     finally:
-        ev.source_lines = original
+        ev.source_lines, ev.tool_call_index = original_lines, original_index
 
 
 def _gold_eval():
