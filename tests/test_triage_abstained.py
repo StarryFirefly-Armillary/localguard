@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from localguard.config import Config
-from localguard.engine import needs_high_priority_review
+from localguard.engine import abstain_log_fields, needs_high_priority_review
 from localguard.model import (
     PLACEHOLDER_EXPLANATION, PLACEHOLDER_REMEDIATION,
     abstain_reason_for, triage_status_for,
@@ -127,3 +127,57 @@ def test_abstain_log_reason_distinguishes_placeholder_and_missing():
     assert abstain_reason_for(ph) == 'placeholder'
     assert abstain_reason_for(dropped) == 'missing_verdict'
     assert triage_status_for(ph) == triage_status_for(dropped) == 'abstained'
+
+
+def test_abstain_log_fields_pure_helper():
+    issue = {'id': 'I-1', 'cwe': 'CWE-89',
+             'evidence': [{'tool': 'patterns', 'raw_ref': 'lg.ext.sql-injection'}]}
+    ctx = {'source': [{'line': 1, 'text': 'x' * 50}]}
+    out = abstain_log_fields(issue, ctx, {'target': 'E:/LocalMD/repos/code-safety'})
+    assert out['rule_id'] == 'lg.ext.sql-injection'
+    assert out['repo_key'] == 'code-safety'
+    assert isinstance(out['evidence_bytes'], int) and out['evidence_bytes'] > 50
+    # best-effort: missing inputs yield None, never raise
+    assert abstain_log_fields({}, None, {}) == {'rule_id': None, 'repo_key': None, 'evidence_bytes': 2}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('mode', ['plain_no_verdict', 'placeholder'])
+async def test_abstained_log_has_extra_dimensions(tmp_path, monkeypatch, mode):
+    import json as _json
+    import sqlite3 as _sqlite
+    root = tmp_path / 'repo'; root.mkdir()
+    for f in FIXTURES.glob('vulnerable.*'): shutil.copyfile(f, root / f.name)
+    cfg = Config(allowed_roots=[root], data_dir=tmp_path / 'state', model_tier='8gb')
+    registry = ToolRegistry(cfg); model = registry.get_model()
+
+    async def fake(self, records, tier='8gb', triage=False, conservative=False, **kw):
+        out = {}
+        for r in records:
+            base = ({'explanation': PLACEHOLDER_EXPLANATION, 'remediation': PLACEHOLDER_REMEDIATION}
+                    if mode == 'placeholder' else {'explanation': 'e', 'remediation': 'r'})
+            out[r['id']] = base
+        return out
+    monkeypatch.setattr(type(model), 'explain_issues', fake)
+    try:
+        q = await registry.call('audit_repository',
+            {'target': str(root), 'scanners': ['patterns'], 'include_dependencies': False,
+             'model_tier': '8gb', 'model_triage': True}, 'log-test', 'test')
+        aid = q['data']['audit_id']
+        for _ in range(40):
+            st = await registry.call('get_audit_status', {'audit_id': aid, 'wait_seconds': 1}, 'log-test')
+            if st['data']['status'] in ('completed', 'failed'): break
+        con = _sqlite.connect(f'file:{tmp_path / "state" / "state.sqlite3"}?mode=ro', uri=True)
+        events = []
+        for (payload,) in con.execute('SELECT payload FROM logs'):
+            d = _json.loads(payload)
+            if d.get('event') == 'model_triage_abstained' and d.get('audit_id') == aid:
+                events.append(d)
+        con.close()
+        assert events, 'abstained events must be logged'
+        for e in events:
+            assert 'rule_id' in e and 'repo_key' in e and 'evidence_bytes' in e
+            assert e['reason'] in ('placeholder', 'missing_verdict')
+            assert isinstance(e['evidence_bytes'], int) and e['evidence_bytes'] > 0
+    finally:
+        await registry.close()

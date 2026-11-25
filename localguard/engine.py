@@ -21,6 +21,29 @@ from .reporting import SEVERITIES, EvidenceError, compare_baseline, from_finding
 CRITICAL_TRIAGE_CWE = frozenset({'CWE-78', 'CWE-89', 'CWE-502', 'CWE-611', 'CWE-918', 'CWE-22'})
 
 
+def abstain_log_fields(issue: dict, context: dict, args: dict) -> dict:
+    """Extra dimensions for model_triage_abstained audit events.
+
+    Pure helper so the log payload can be unit-tested without an audit run.
+    repo_key is the target basename (a stable local key); rule_id comes from
+    the first evidence raw_ref; evidence_bytes is the model-visible source
+    payload size. All values are best-effort and never block triage.
+    """
+    rule = ''
+    for ev in issue.get('evidence') or []:
+        if isinstance(ev, dict) and ev.get('raw_ref'):
+            rule = str(ev['raw_ref'])[:200]
+            break
+    target = str(args.get('target') or '')
+    repo_key = target.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1][:200] if target else None
+    source = (context or {}).get('source') or []
+    try:
+        evidence_bytes = len(json.dumps(source, ensure_ascii=False).encode('utf-8'))
+    except Exception:
+        evidence_bytes = None
+    return {'rule_id': rule or None, 'repo_key': repo_key, 'evidence_bytes': evidence_bytes}
+
+
 def needs_high_priority_review(issue: dict) -> bool:
     """Critical-CWE abstained/uncertain findings get high-priority review.
 
@@ -477,9 +500,11 @@ class AuditEngine:
                             if status == 'abstained':
                                 reason = abstain_reason_for(update) or 'missing_verdict'
                                 triage['abstain_reason'] = reason
+                                log_extra = abstain_log_fields(
+                                    issue, contexts.get(issue['id']), args)
                                 self.store.log(event='model_triage_abstained', audit_id=job['id'],
                                                session=session, tier=tier, issue_id=issue['id'],
-                                               cwe=issue.get('cwe'), reason=reason)
+                                               cwe=issue.get('cwe'), reason=reason, **log_extra)
                             else:
                                 triage_records.append({'issue_id': issue['id'],
                                                        'verdict': update['verdict'],
