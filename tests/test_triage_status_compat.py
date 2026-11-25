@@ -86,3 +86,17 @@ def test_invalid_confidence_still_rejected():
                           'confidence': 2, 'reason': 'why', 'tier': '8gb'})
     with pytest.raises(ValidationError):
         validate(bad, STATUS)
+
+
+def test_abstention_report_repo_dimension_prefers_repo_key():
+    import sys
+    sys.path.insert(0, str(ROOT / 'scripts'))
+    from audit_abstention_report import summarize
+    events = [
+        {'repo_key': 'code-safety', 'repo_url': 'https://x/a.git', 'target': 'E:/a', 'cwe': 'CWE-89'},
+        {'repo_url': 'https://x/b.git', 'target': 'E:/b', 'cwe': 'CWE-22'},
+        {'target': 'E:/c/vuln', 'cwe': 'CWE-78'},
+    ]
+    s = summarize(events)
+    assert set(s['by_repo']) == {'code-safety', 'https://x/b.git', 'E:/c/vuln'}
+    assert s['by_repo']['code-safety'] == 1

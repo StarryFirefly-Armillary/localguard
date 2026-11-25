@@ -130,15 +130,25 @@ def test_abstain_log_reason_distinguishes_placeholder_and_missing():
 
 
 def test_abstain_log_fields_pure_helper():
+    # Real scanner shape: raw_ref is a JSON pointer, rule_id is on the finding.
     issue = {'id': 'I-1', 'cwe': 'CWE-89',
-             'evidence': [{'tool': 'patterns', 'raw_ref': 'lg.ext.sql-injection'}]}
-    ctx = {'source': [{'line': 1, 'text': 'x' * 50}]}
-    out = abstain_log_fields(issue, ctx, {'target': 'E:/LocalMD/repos/code-safety'})
-    assert out['rule_id'] == 'lg.ext.sql-injection'
-    assert out['repo_key'] == 'code-safety'
+             'evidence': [{'tool': 'patterns', 'raw_ref': '#/results/66'}]}
+    ctx = {'rule_id': 'lg.ext.sql-injection',
+           'source': [{'line': 1, 'text': 'x' * 50}]}
+    out = abstain_log_fields(issue, ctx, {'target': 'E:/LocalMD/repos/code-safety/vulnerable-app'})
+    assert out['rule_id'] == 'lg.ext.sql-injection', 'must use finding rule id, not raw_ref'
+    assert out['evidence_ref'] == '#/results/66', 'raw_ref kept separately'
+    assert out['repo_key'] == 'code-safety', 'nested target must resolve to repo, not subdirectory'
+    assert out['target'] and 'code-safety' in out['target']
     assert isinstance(out['evidence_bytes'], int) and out['evidence_bytes'] > 50
-    # best-effort: missing inputs yield None, never raise
-    assert abstain_log_fields({}, None, {}) == {'rule_id': None, 'repo_key': None, 'evidence_bytes': 2}
+    # Unrecognized target: repo_key is unknown, but target is still recorded.
+    unknown = abstain_log_fields(issue, ctx, {'target': 'E:/tmp/scratch/subdir'})
+    assert unknown['repo_key'] is None and unknown['target']
+    # best-effort: missing inputs never raise; empty evidence_bytes is 2 ('[]')
+    empty = abstain_log_fields({}, None, {})
+    assert empty['rule_id'] is None and empty['repo_key'] is None
+    assert empty['evidence_ref'] is None and empty['target'] is None
+    assert empty['evidence_bytes'] == 2
 
 
 @pytest.mark.anyio
@@ -179,5 +189,12 @@ async def test_abstained_log_has_extra_dimensions(tmp_path, monkeypatch, mode):
             assert 'rule_id' in e and 'repo_key' in e and 'evidence_bytes' in e
             assert e['reason'] in ('placeholder', 'missing_verdict')
             assert isinstance(e['evidence_bytes'], int) and e['evidence_bytes'] > 0
+            # Values, not just presence: real rule ids are dotted scanner ids,
+            # never JSON pointers; target must be recorded verbatim.
+            assert e['rule_id'] and not str(e['rule_id']).startswith('#/results/')
+            assert e.get('target'), 'raw target must always be logged'
+            # Temp dirs are unrecognized: repo_key must be None, not a basename.
+            assert e['repo_key'] is None, 'unrecognized target must not fake a repo_key'
+            assert 'raw_ref' not in e or e.get('evidence_ref') is not None
     finally:
         await registry.close()

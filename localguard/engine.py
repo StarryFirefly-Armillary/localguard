@@ -25,23 +25,38 @@ def abstain_log_fields(issue: dict, context: dict, args: dict) -> dict:
     """Extra dimensions for model_triage_abstained audit events.
 
     Pure helper so the log payload can be unit-tested without an audit run.
-    repo_key is the target basename (a stable local key); rule_id comes from
-    the first evidence raw_ref; evidence_bytes is the model-visible source
-    payload size. All values are best-effort and never block triage.
+
+    - rule_id comes from the REAL finding rule id saved in context; evidence
+      raw_ref (a JSON pointer like '#/results/66') is NOT a rule id and is
+      recorded separately as evidence_ref.
+    - repo_key is a recognized repository name in the target path. A nested
+      path like '.../code-safety/vulnerable-app' maps to 'code-safety'.
+      Unrecognized targets yield repo_key=None; the raw target is always kept.
+    - evidence_bytes is the model-visible source payload size.
+    All values are best-effort and never block triage.
     """
-    rule = ''
+    ctx = context or {}
+    rule = ctx.get('rule_id')
+    evidence_ref = None
     for ev in issue.get('evidence') or []:
         if isinstance(ev, dict) and ev.get('raw_ref'):
-            rule = str(ev['raw_ref'])[:200]
+            evidence_ref = str(ev['raw_ref'])[:200]
             break
+    if not rule:
+        rule = None
     target = str(args.get('target') or '')
-    repo_key = target.replace('\\', '/').rstrip('/').rsplit('/', 1)[-1][:200] if target else None
-    source = (context or {}).get('source') or []
+    parts = [p for p in target.replace('\\', '/').split('/') if p]
+    # Known repository markers in the target path, longest/most-specific first.
+    known = ('code-safety', 'StarryFirefly-s-Blog-personal', 'localguard')
+    repo_key = next((k for k in known if k.lower() in {p.lower() for p in parts}), None)
+    source = ctx.get('source') or []
     try:
         evidence_bytes = len(json.dumps(source, ensure_ascii=False).encode('utf-8'))
     except Exception:
         evidence_bytes = None
-    return {'rule_id': rule or None, 'repo_key': repo_key, 'evidence_bytes': evidence_bytes}
+    return {'rule_id': str(rule)[:200] if rule else None,
+            'evidence_ref': evidence_ref, 'repo_key': repo_key,
+            'target': target[:4096] or None, 'evidence_bytes': evidence_bytes}
 
 
 def needs_high_priority_review(issue: dict) -> bool:
@@ -416,6 +431,9 @@ class AuditEngine:
                                 contexts[issue['id']] = {
                                     'id': issue['id'], 'title': issue['title'][:300], 'severity': issue['severity'],
                                     'category': issue['category'], 'cwe': issue['cwe'], 'language': read['data']['language'],
+                                    # The REAL scanner rule id. evidence.raw_ref is a
+                                    # JSON pointer like '#/results/66', not a rule id.
+                                    'rule_id': finding.get('rule_id'),
                                     'origin_hint': Path(original).parent.relative_to(root).as_posix()[:200],
                                     'source': [{'line': row['line'], 'text': row['text'][:100]} for row in read['data']['lines']],
                                     'source_truncated': any(len(row['text']) > 100 for row in read['data']['lines']),
