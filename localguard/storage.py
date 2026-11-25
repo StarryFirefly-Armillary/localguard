@@ -169,6 +169,10 @@ class Store:
             return f'模型分诊已记录 {len(data.get("verdicts", []))} 条判断'
         if event == 'model_triage_failed':
             return f'模型分诊失败，保留确定性发现：{str(data.get("reason", ""))[:160]}'
+        if event == 'model_triage_abstained':
+            cwe = data.get('cwe') or '未知 CWE'
+            reason = '占位条目' if data.get('reason') == 'placeholder' else '无有效 verdict'
+            return f'模型未判定需人工复核：{data.get("issue_id", "")}（{cwe}，{reason}）'
         if event == 'warning_explanation_failed':
             return f'覆盖提示翻译失败，保留原文：{str(data.get("reason", ""))[:160]}'
         if event == 'baseline_failed':
@@ -298,9 +302,10 @@ class Store:
         if issue is None:
             raise ValueError('Unknown issue_id')
         triage = issue.get('triage')
+        # Abstained/uncertain entries have no scored verdict to override.
         overridden = bool(triage and (
-            (decision == 'false_positive' and triage['verdict'] == 'likely_true') or
-            (decision == 'confirmed' and triage['verdict'] == 'likely_false')))
+            (decision == 'false_positive' and triage.get('verdict') == 'likely_true') or
+            (decision == 'confirmed' and triage.get('verdict') == 'likely_false')))
         if triage and overridden:
             triage['overridden'] = True
             issue['triage'] = triage
@@ -310,7 +315,7 @@ class Store:
             if isinstance(ref, str):
                 rule_id = ref
                 break
-        verdict = triage['verdict'] if triage else ''
+        verdict = (triage.get('verdict') or '') if triage else ''
         with self.connect() as db:
             db.execute('INSERT OR REPLACE INTO reviews(audit_id,issue_id,decision,rule_id,model_verdict) '
                        'VALUES(?,?,?,?,?)', (audit_id, issue_id, decision, rule_id, verdict))

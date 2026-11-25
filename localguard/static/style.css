@@ -240,6 +240,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 .badge.triage-likely_true { color: var(--red); background: var(--red-bg); }
 .badge.triage-likely_false { color: var(--green); background: var(--green-bg); }
 .badge.triage-uncertain { color: var(--amber); background: var(--amber-bg); }
+.badge.triage-abstained { color: var(--muted); background: var(--panel-raised); border: 1px dashed var(--line); }
 .badge.ai-skipped { color: var(--muted); background: #eaeaec; border: 1px solid var(--line); }
 .badge.triage-overridden { text-decoration: line-through; opacity: .7; }
 .badge.feedback-badge { color: var(--muted); background: var(--panel-raised); font-weight: 400; }

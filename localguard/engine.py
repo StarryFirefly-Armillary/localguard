@@ -11,9 +11,25 @@ import tempfile
 from urllib.parse import urlsplit
 
 from .git_evidence import OID, REF, diff_changes, git_command, revision_tree, write_revision_snapshot
+from .model import abstain_reason_for, triage_status_for
 from .paths import BoundaryError, PathPolicy, safe_relative
 from .process import run
 from .reporting import SEVERITIES, EvidenceError, compare_baseline, from_finding, rank
+
+# Critical CWEs whose abstained/uncertain triage is promoted to high-priority
+# human review. Advisory only — never changes severity or deterministic order.
+CRITICAL_TRIAGE_CWE = frozenset({'CWE-78', 'CWE-89', 'CWE-502', 'CWE-611', 'CWE-918', 'CWE-22'})
+
+
+def needs_high_priority_review(issue: dict) -> bool:
+    """Critical-CWE abstained/uncertain findings get high-priority review.
+
+    Pure helper so the promotion rule can be unit-tested without an audit run.
+    Never changes severity, location, source, or deterministic ordering.
+    """
+    triage = issue.get('triage') or {}
+    return (triage.get('triage_status') in ('abstained', 'uncertain')
+            and issue.get('cwe') in CRITICAL_TRIAGE_CWE)
 
 # Files the dependency scanners (grype/pip-audit) need to locate exact package
 # versions. discovery.classify() treats them as non-source; keep them in the
@@ -437,18 +453,39 @@ class AuditEngine:
                             continue
                         issue['ai_explanation'] = 'done'
                         issue.update(explanation=update['explanation'], remediation=update['remediation'])
-                        if want_triage and 'verdict' in update:
-                            issue['triage'] = {
-                                'verdict': update['verdict'],
-                                'confidence': update.get('confidence', 0.5),
+                        if want_triage:
+                            status = triage_status_for(update)
+                            # Do NOT fabricate confidence for abstained entries —
+                            # a default 0.5 would imply the model scored them.
+                            confidence = (update.get('confidence') if status != 'abstained' else None)
+                            triage = {
+                                'triage_status': status,
+                                'verdict': update.get('verdict'),
+                                'confidence': confidence,
                                 'reason': str(update.get('reason', '')),
                                 'tier': tier,
                                 'overridden': False,
                             }
-                            triage_records.append({'issue_id': issue['id'],
-                                                   'verdict': update['verdict'],
-                                                   'confidence': update.get('confidence'),
-                                                   'reason': str(update.get('reason', ''))[:300]})
+                            issue['triage'] = triage
+                            if status in ('abstained', 'uncertain'):
+                                # Advisory only: retain the finding, never convert
+                                # to likely_false, never lower severity, never
+                                # touch location/source or the deterministic rank.
+                                issue['needs_human_review'] = True
+                                if needs_high_priority_review(issue):
+                                    triage['high_priority_review'] = True
+                            if status == 'abstained':
+                                reason = abstain_reason_for(update) or 'missing_verdict'
+                                triage['abstain_reason'] = reason
+                                self.store.log(event='model_triage_abstained', audit_id=job['id'],
+                                               session=session, tier=tier, issue_id=issue['id'],
+                                               cwe=issue.get('cwe'), reason=reason)
+                            else:
+                                triage_records.append({'issue_id': issue['id'],
+                                                       'verdict': update['verdict'],
+                                                       'triage_status': status,
+                                                       'confidence': update.get('confidence'),
+                                                       'reason': str(update.get('reason', ''))[:300]})
                     if triage_records:
                         # One batched write: per-issue log calls can hit a
                         # transient SQLITE_READONLY under WAL lock contention.

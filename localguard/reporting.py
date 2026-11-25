@@ -125,8 +125,9 @@ def reorder_by_feedback(issues):
         if SEVERITIES.get(issue['severity'], 9) > 1 and false_positive > confirmed:
             # Bounded: one place per net false positive, capped at 2.
             demote = min(2, false_positive - confirmed)
-        # Model triage ordering is handled once in the engine (penalty sort).
-        # Do not apply it again here: that would double-demote the same hint.
+        # Model triage is ADVISORY ONLY and never sorts or demotes findings.
+        # rank() above is the single deterministic order (severity, confidence,
+        # path, line, id); do not apply any triage hint here.
         issue['_feedback_rank'] = (index + demote, index)
     ordered.sort(key=lambda i: (i['_feedback_rank'][0], i['_feedback_rank'][1]))
     for issue in ordered:

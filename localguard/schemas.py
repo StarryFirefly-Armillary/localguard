@@ -34,10 +34,16 @@ ISSUE = obj({
     'locations': {**array(LOCATION), 'minItems': 1}, 'evidence': {**array(EVIDENCE), 'minItems': 1},
     'explanation': string(), 'remediation': string(), 'needs_human_review': BOOL,
     'review': string(enum=['unreviewed', 'confirmed', 'false_positive']),
-    'triage': obj({'verdict': string(enum=['likely_true', 'likely_false', 'uncertain']),
-                   'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
-                   'reason': string(), 'tier': string(), 'overridden': BOOL},
-                  ['verdict', 'confidence', 'reason', 'tier']),
+    # triage_status/confidence optional for backward compatibility with legacy
+    # audits (they only carry verdict/confidence/reason/tier). New records from
+    # the engine ALWAYS write triage_status; abstained has confidence=null.
+    'triage': obj({'triage_status': string(enum=['scored', 'uncertain', 'abstained']),
+                   'verdict': {'anyOf': [string(enum=['likely_true', 'likely_false', 'uncertain']), {'type': 'null'}]},
+                   'confidence': {'anyOf': [{'type': 'number', 'minimum': 0, 'maximum': 1}, {'type': 'null'}]},
+                   'reason': string(), 'tier': string(), 'overridden': BOOL,
+                   'abstain_reason': string(enum=['placeholder', 'missing_verdict']),
+                   'high_priority_review': BOOL},
+                  ['verdict', 'reason', 'tier']),
     'feedback': obj({'rule_confirmed': integer(), 'rule_false_positive': integer()},
                     ['rule_confirmed', 'rule_false_positive']),
     'ai_explanation': string(enum=['done', 'skipped_budget', 'unavailable'])

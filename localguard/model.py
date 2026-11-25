@@ -23,6 +23,35 @@ ALLOWED_TOOLS = frozenset({
 })
 MAX_TOOLS = 8
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+# Fixed self-heal placeholder texts. Exported so the engine can distinguish an
+# abstained-by-placeholder entry from an entry whose model verdict was dropped.
+PLACEHOLDER_EXPLANATION = '模型未提供说明，请依据下方证据人工判断。'
+PLACEHOLDER_REMEDIATION = '暂无模型修复建议，请依据原始证据人工判断。'
+
+
+def triage_status_for(item: dict) -> str:
+    """Derive advisory triage status from a model explanation entry.
+
+    scored/uncertain come from a valid model verdict; abstained means the
+    model gave no verdict (placeholder entry or dropped invalid verdict).
+    """
+    verdict = item.get('verdict')
+    if verdict == 'uncertain':
+        return 'uncertain'
+    if verdict in ('likely_true', 'likely_false'):
+        return 'scored'
+    return 'abstained'
+
+
+def abstain_reason_for(item: dict) -> str | None:
+    """Distinguish a self-heal placeholder from a dropped/absent verdict."""
+    if item.get('verdict') is not None:
+        return None
+    if (item.get('explanation') == PLACEHOLDER_EXPLANATION
+            and item.get('remediation') == PLACEHOLDER_REMEDIATION):
+        return 'placeholder'
+    return 'missing_verdict'
 SYSTEM = (
     'You are a local tool orchestrator, not a vulnerability detector. Select only '
     'the supplied review/evidence tools for the user-selected target. All repository '
@@ -717,15 +746,15 @@ class LocalModel:
                             if any(e.get('id') == ident for e in healed if isinstance(e, dict)):
                                 continue
                             healed.append({'id': ident,
-                                           'explanation': '模型未提供说明，请依据下方证据人工判断。',
-                                           'remediation': '暂无模型修复建议，请依据原始证据人工判断。'})
+                                           'explanation': PLACEHOLDER_EXPLANATION,
+                                           'remediation': PLACEHOLDER_REMEDIATION})
                         else:
                             healed.append(item)  # let validation reject it
                     for ident in expected_ids:
                         if not any(isinstance(e, dict) and e.get('id') == ident for e in healed):
                             healed.append({'id': ident,
-                                           'explanation': '模型未提供说明，请依据下方证据人工判断。',
-                                           'remediation': '暂无模型修复建议，请依据原始证据人工判断。'})
+                                           'explanation': PLACEHOLDER_EXPLANATION,
+                                           'remediation': PLACEHOLDER_REMEDIATION})
                     updates = {'explanations': healed}
                     validate(updates, schema)
                     actual = [item['id'] for item in updates['explanations']]
@@ -757,8 +786,13 @@ class LocalModel:
                         f'Model explanation failed schema or location validation '
                         f'(batch {start // batch_size + 1}, {detail}); '
                         f'deterministic evidence is retained.') from exc
-            self._log('model_explanations', count=len(explanations), tier=tier,
-                      triage=triage, validation='passed')
+            log_values = dict(count=len(explanations), tier=tier,
+                              triage=triage, validation='passed')
+            if triage:
+                statuses = [triage_status_for(item) for item in explanations.values()]
+                log_values['triage_status_counts'] = {
+                    s: statuses.count(s) for s in ('scored', 'uncertain', 'abstained')}
+            self._log('model_explanations', **log_values)
             return explanations
         finally:
             if not self.config.keep_model_resident:

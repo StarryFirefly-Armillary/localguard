@@ -637,10 +637,10 @@
     const all = issues();
     const filtered = all.filter((issue) => {
       const searchable = [issue.title, issue.id, issue.cwe, issue.category, ...locationsOf(issue).map((location) => location.path)].join(' ').toLocaleLowerCase();
-      const verdict = issue.triage?.verdict || 'none';
+      const triageKey = window.TriageStatus.filterKeyOf(issue.triage);
       return (severityFilter === 'all' || severity(issue) === severityFilter)
         && (reviewFilter === 'all' || reviewOf(issue) === reviewFilter)
-        && (triageFilter === 'all' || verdict === triageFilter)
+        && (triageFilter === 'all' || triageKey === triageFilter)
         && (!search || searchable.includes(search));
     });
     $('issue-count').textContent = String(all.length);
@@ -697,12 +697,14 @@
     const top = node('div', 'issue-topline');
     top.append(node('span', `badge severity-${level}`, SEVERITIES[level]), node('span', 'issue-category', CATEGORIES[issue.category] || text(issue.category, '未分类')));
     const triage = issue.triage;
-    if (triage && triage.verdict) {
-      const labels = { likely_true: '模型：可能是真的', likely_false: '模型：可能误报', uncertain: '模型：不确定' };
-      const badge = node('span', `badge triage-${triage.verdict}${triage.overridden ? ' triage-overridden' : ''}`,
-                         (labels[triage.verdict] || '模型分诊') + (triage.overridden ? ' · 已人工推翻' : ''));
-      badge.title = text(triage.reason, '');
-      top.append(badge);
+    if (triage) {
+      const badge = window.TriageStatus.badgeOf(triage);
+      const nodeBadge = node('span', `badge triage-${badge.key}${triage.overridden ? ' triage-overridden' : ''}`,
+                             badge.label + (triage.overridden ? ' · 已人工推翻' : ''));
+      nodeBadge.title = badge.status === 'abstained'
+        ? (triage.abstain_reason === 'placeholder' ? '模型未返回该条结论（占位），需人工复核' : '模型未返回有效结论，需人工复核')
+        : text(triage.reason, '');
+      top.append(nodeBadge);
     }
     if (issue.ai_explanation === 'skipped_budget') {
       const badge = node('span', 'badge ai-skipped', '未做 AI 解释');

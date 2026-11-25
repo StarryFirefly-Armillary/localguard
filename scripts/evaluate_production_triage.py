@@ -142,6 +142,7 @@ def _metrics(results: list[dict]) -> dict:
     neg_cov = sum(1 for r in neg if r['verdict'] is not None)
     return {
         'samples': n, 'positive_samples': len(pos), 'negative_samples': len(neg),
+        'abstained_excluded_from_quality_denominator': True,
         'verdict_completeness': round(triaged / n, 4) if n else None,
         'positive_coverage': round(pos_cov / len(pos), 4) if pos else None,
         'negative_coverage': round(neg_cov / len(neg), 4) if neg else None,
