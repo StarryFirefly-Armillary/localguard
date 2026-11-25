@@ -20,7 +20,8 @@ JS = ROOT / 'localguard/static/triage-status.js'
 def _js(fn, arg):
     script = (f"const api=require({json.dumps(str(JS))});"
               f"process.stdout.write(JSON.stringify(api.{fn}({json.dumps(arg)})));")
-    return json.loads(subprocess.check_output(['node', '-e', script], text=True))
+    # Windows locale may be GBK; decode Node's UTF-8 output explicitly.
+    return json.loads(subprocess.check_output(['node', '-e', script], encoding='utf-8'))
 
 
 def test_ui_filter_scored_uses_verdict_not_status():
