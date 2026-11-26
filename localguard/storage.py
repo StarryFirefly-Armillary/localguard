@@ -11,6 +11,8 @@ import uuid
 
 import psutil
 
+from .schemas import rule_id_from_evidence
+
 
 def alive(pid, started):
     try:
@@ -309,19 +311,28 @@ class Store:
         if triage and overridden:
             triage['overridden'] = True
             issue['triage'] = triage
-        rule_id = ''
-        for evidence in issue.get('evidence', []):
-            ref = evidence.get('raw_ref') if isinstance(evidence, dict) else None
-            if isinstance(ref, str):
-                rule_id = ref
-                break
+        # Structured identity comes from the issue's evidence + locations.
+        # EVIDENCE.rule_id holds the REAL scanner rule id; raw_ref may be a
+        # JSON pointer ('#/results/66') and must never be used as rule_id.
+        evidence = next((e for e in issue.get('evidence', []) if isinstance(e, dict)), {})
+        evidence_ref = evidence.get('raw_ref') or ''
+        # Shared resolver: new issues use evidence.rule_id; legacy issues fall
+        # back to raw_ref when it is a real rule id, never a JSON pointer.
+        rule_id = rule_id_from_evidence(evidence)
+        scanner = evidence.get('tool') or None
+        locations = issue.get('locations') or []
+        first = locations[0] if locations and isinstance(locations[0], dict) else {}
         verdict = (triage.get('verdict') or '') if triage else ''
         with self.connect() as db:
             db.execute('INSERT OR REPLACE INTO reviews(audit_id,issue_id,decision,rule_id,model_verdict) '
-                       'VALUES(?,?,?,?,?)', (audit_id, issue_id, decision, rule_id, verdict))
+                       'VALUES(?,?,?,?,?)', (audit_id, issue_id, decision, str(rule_id or '')[:200], verdict))
         self.log(event='human_review',audit_id=audit_id,issue_id=issue_id,decision=decision,
                  session=session, overruled_model=overridden,
-                 rule_id=rule_id, model_verdict=verdict or None)
+                 rule_id=rule_id, model_verdict=verdict or None,
+                 scanner=scanner, engine=scanner,
+                 path=str(first.get('path') or '')[:1000] or None,
+                 line=first.get('line') if isinstance(first.get('line'), int) else None,
+                 evidence_ref=evidence_ref or None)
 
     def baseline_for(self, target: str, exclude_id: str):
         """Most recent completed audit of the same target, for change review."""

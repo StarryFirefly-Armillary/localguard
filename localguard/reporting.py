@@ -143,7 +143,11 @@ def from_finding(finding, text):
             'title':finding['title'],'severity':finding['severity'],'category':finding['category'],
             'cwe':finding.get('cwe',''),'confidence':finding.get('confidence',0.7),
             'locations':[{'path':finding['path'],'line':finding['line'],'snippet_hash':snippet_hash(text),'stale':False}],
-            'evidence':[{'tool':finding['tool'],'raw_ref':finding.get('raw_ref',finding.get('rule_id',''))}],
+            'evidence':[{'tool':finding['tool'],
+                         # legacy fallback kept for scanners without raw_ref
+                         'raw_ref':finding.get('raw_ref',finding.get('rule_id','')),
+                         # REAL scanner rule id, kept separately from raw_ref.
+                         'rule_id':finding.get('rule_id') or ''}],
             'explanation':finding.get('explanation',''),'remediation':finding.get('remediation',''),
             'needs_human_review':True,'review':'unreviewed'}
 

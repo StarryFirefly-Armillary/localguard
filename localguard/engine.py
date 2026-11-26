@@ -15,10 +15,40 @@ from .model import abstain_reason_for, triage_status_for
 from .paths import BoundaryError, PathPolicy, safe_relative
 from .process import run
 from .reporting import SEVERITIES, EvidenceError, compare_baseline, from_finding, rank
+from .schemas import rule_id_from_evidence
 
 # Critical CWEs whose abstained/uncertain triage is promoted to high-priority
 # human review. Advisory only — never changes severity or deterministic order.
 CRITICAL_TRIAGE_CWE = frozenset({'CWE-78', 'CWE-89', 'CWE-502', 'CWE-611', 'CWE-918', 'CWE-22'})
+
+
+def finding_log_fields(issue: dict, context: dict) -> dict:
+    """Minimal STRUCTURED identity for a finding-level audit event.
+
+    Only identifiers and coordinates — never source text or secret values.
+    Prefer the model-visible context (built from the real finding), then fall
+    back to the issue's evidence. `engine` is SYNONYMOUS with `scanner` —
+    model tier is a separate `model_tier` field, never written here.
+    JSON-pointer raw_ref values are never treated as rule ids.
+    """
+    issue = issue if isinstance(issue, dict) else {}
+    ctx = context if isinstance(context, dict) else {}
+    locations = issue.get('locations') or []
+    first = locations[0] if locations and isinstance(locations[0], dict) else {}
+    evidence = next((e for e in (issue.get('evidence') or []) if isinstance(e, dict)), {})
+    rule = ctx.get('rule_id') or rule_id_from_evidence(evidence)
+    if rule and str(rule).startswith('#/'):
+        rule = None  # context may also carry a JSON pointer; never a rule id
+    scanner = ctx.get('scanner') or evidence.get('tool')
+    return {
+        'issue_id': issue.get('id') or ctx.get('id') or None,
+        'rule_id': str(rule)[:200] if rule else None,
+        'scanner': str(scanner)[:100] if scanner else None,
+        'path': str(first.get('path') or ctx.get('path') or '')[:1000] or None,
+        'line': first.get('line') if isinstance(first.get('line'), int) else ctx.get('line'),
+        # engine == scanner (detection engine), NOT the model tier.
+        'engine': str(scanner)[:100] if scanner else None,
+    }
 
 
 def abstain_log_fields(issue: dict, context: dict, args: dict) -> dict:
@@ -54,9 +84,11 @@ def abstain_log_fields(issue: dict, context: dict, args: dict) -> dict:
         evidence_bytes = len(json.dumps(source, ensure_ascii=False).encode('utf-8'))
     except Exception:
         evidence_bytes = None
-    return {'rule_id': str(rule)[:200] if rule else None,
-            'evidence_ref': evidence_ref, 'repo_key': repo_key,
-            'target': target[:4096] or None, 'evidence_bytes': evidence_bytes}
+    out = finding_log_fields(issue, ctx)
+    out.update({'rule_id': str(rule)[:200] if rule else out['rule_id'],
+                'evidence_ref': evidence_ref, 'repo_key': repo_key,
+                'target': target[:4096] or None, 'evidence_bytes': evidence_bytes})
+    return out
 
 
 def needs_high_priority_review(issue: dict) -> bool:
@@ -434,6 +466,11 @@ class AuditEngine:
                                     # The REAL scanner rule id. evidence.raw_ref is a
                                     # JSON pointer like '#/results/66', not a rule id.
                                     'rule_id': finding.get('rule_id'),
+                                    # Minimal structured coordinates for finding-level logs.
+                                    # Never include source text or secret values.
+                                    'scanner': scanner,
+                                    'path': issue['locations'][0]['path'] if issue.get('locations') else None,
+                                    'line': finding.get('line'),
                                     'origin_hint': Path(original).parent.relative_to(root).as_posix()[:200],
                                     'source': [{'line': row['line'], 'text': row['text'][:100]} for row in read['data']['lines']],
                                     'source_truncated': any(len(row['text']) > 100 for row in read['data']['lines']),
@@ -483,7 +520,8 @@ class AuditEngine:
                         if not want_triage:
                             raise
                         self.store.log(event='model_triage_failed', audit_id=job['id'],
-                                       session=session, reason=str(triage_exc)[:300], tier=tier)
+                                       session=session, reason=str(triage_exc)[:300], tier=tier,
+                                       model_tier=tier)
                         want_triage = False
                         explanations = await model.explain_issues(records, tier, triage=False)
                     triage_records = []
@@ -521,19 +559,21 @@ class AuditEngine:
                                 log_extra = abstain_log_fields(
                                     issue, contexts.get(issue['id']), args)
                                 self.store.log(event='model_triage_abstained', audit_id=job['id'],
-                                               session=session, tier=tier, issue_id=issue['id'],
+                                               session=session, tier=tier, model_tier=tier,
                                                cwe=issue.get('cwe'), reason=reason, **log_extra)
                             else:
-                                triage_records.append({'issue_id': issue['id'],
-                                                       'verdict': update['verdict'],
-                                                       'triage_status': status,
-                                                       'confidence': update.get('confidence'),
-                                                       'reason': str(update.get('reason', ''))[:300]})
+                                record = {'verdict': update['verdict'],
+                                          'triage_status': status,
+                                          'confidence': update.get('confidence'),
+                                          'reason': str(update.get('reason', ''))[:300]}
+                                record.update(finding_log_fields(issue, contexts.get(issue['id'])))
+                                record['model_tier'] = tier
+                                triage_records.append(record)
                     if triage_records:
                         # One batched write: per-issue log calls can hit a
                         # transient SQLITE_READONLY under WAL lock contention.
                         self.store.log(event='model_triage', audit_id=job['id'], session=session,
-                                       tier=tier, verdicts=triage_records)
+                                       tier=tier, model_tier=tier, verdicts=triage_records)
                     # Model triage is ADVISORY ONLY: it never reorders findings.
                     # Deterministic rank() order (severity, scanner confidence,
                     # path, line, id) is preserved so verified high-risk findings

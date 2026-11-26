@@ -26,7 +26,28 @@ TARGET = string(minLength=1, maxLength=4096, pattern=r'^(?:(?:[A-Za-z]:[\\/]|/)[
 ID = string(pattern='^[a-f0-9]{32}$')
 HASH = string(pattern='^[a-f0-9]{64}$')
 LOCATION = obj({'path': string(minLength=1), 'line': integer(1), 'snippet_hash': HASH, 'stale': BOOL}, ['path', 'line', 'snippet_hash'])
-EVIDENCE = obj({'tool': string(), 'raw_ref': string(), 'range': array(integer(1), 2)}, ['tool'])
+# rule_id is the REAL scanner rule id (e.g. lg.ext.xxe-lxml-etree). raw_ref
+# may be a JSON pointer like '#/results/66' and is NOT a rule id.
+EVIDENCE = obj({'tool': string(), 'raw_ref': string(), 'rule_id': string(),
+                'range': array(integer(1), 2)}, ['tool'])
+
+
+def rule_id_from_evidence(evidence: dict | None) -> str | None:
+    """Resolve the REAL rule id from an evidence entry.
+
+    New issues carry `rule_id` explicitly. Legacy issues only have `raw_ref`,
+    which for some scanners IS the rule id (e.g. 'patterns.reverse-shell');
+    JSON pointers ('#/results/66') are never rule ids and return None.
+    """
+    if not isinstance(evidence, dict):
+        return None
+    rule = evidence.get('rule_id')
+    if rule and not str(rule).startswith('#/'):
+        return str(rule)[:200]
+    ref = evidence.get('raw_ref')
+    if ref and not str(ref).startswith('#/'):
+        return str(ref)[:200]
+    return None
 ISSUE = obj({
     'id': string(), 'title': string(), 'severity': string(enum=['critical', 'high', 'medium', 'low', 'info']),
     'category': string(enum=['credential_leak', 'injection', 'backdoor', 'dependency_cve', 'misconfig', 'other']),
