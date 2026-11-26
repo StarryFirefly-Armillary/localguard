@@ -1191,6 +1191,15 @@
     },
     {
      "pattern-not-regex": "hashlib\\.sha1\\(\\s*b[\"']blob\\s+[\"']"
+    },
+    {
+     "pattern-not": "hashlib.sha1(..., usedforsecurity=False, ...)"
+    },
+    {
+     "pattern-not-inside": "def get_template_key(...):\n  ..."
+    },
+    {
+     "pattern-not-inside": "def get_source_checksum(...):\n  ..."
     }
    ]
   },
@@ -1328,6 +1337,15 @@
     },
     {
      "pattern-not-inside": "def $F(...):\n  ...\n  ImageDraw.Draw(...)\n  ..."
+    },
+    {
+     "pattern-not-inside": "def backoff(...):\n  ..."
+    },
+    {
+     "pattern-not-inside": "def get_random_item(...):\n  ..."
+    },
+    {
+     "pattern-not-regex": "random\\.random\\(\\)\\s*\\*\\s*\\w*jitter"
     }
    ]
   },
@@ -2010,6 +2028,12 @@
        "pattern": "compile($USER_INPUT, ...)"
       }
      ]
+    },
+    {
+     "pattern-not-regex": "eval\\(\\s*[\"'][^\"']*[\"']\\s*\\)"
+    },
+    {
+     "pattern-not-regex": "eval\\(\\s*[A-Z_][A-Z0-9_]*\\s*\\)"
     }
    ]
   },
@@ -2325,6 +2349,15 @@
        "pattern": "$TEMPLATE_STR = request.$METHOD[...]\n...\nTemplate($TEMPLATE_STR)\n"
       }
      ]
+    },
+    {
+     "pattern-not-regex": "Template\\(\\s*[\"'][^\"']*[\"']\\s*\\)"
+    },
+    {
+     "pattern-not-inside": "$X = os.environ.get(...)\n...\nTemplate($X)"
+    },
+    {
+     "pattern-not-inside": "$X = os.getenv(...)\n...\nTemplate($X)"
     }
    ]
   },
@@ -2416,6 +2449,9 @@
        "pattern": "$TEMPLATE_STR = request.$METHOD.get(...)\n...\n$ENV.from_string($TEMPLATE_STR)\n"
       }
      ]
+    },
+    {
+     "pattern-not-regex": "from_string\\(\\s*[\"'][^\"']*[\"']\\s*\\)"
     }
    ]
   },
@@ -3308,6 +3344,9 @@
        "pattern": "$DATA = request.body\n...\nlxml.etree.fromstring($DATA)\n"
       }
      ]
+    },
+    {
+     "pattern-not-regex": "etree\\.(XML|fromstring|parse)\\(\\s*[\"'][^\"']*[\"']\\s*\\)"
     }
    ]
   },
