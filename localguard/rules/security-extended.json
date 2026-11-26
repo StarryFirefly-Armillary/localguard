@@ -2330,34 +2330,33 @@
      "https://book.hacktricks.xyz/pentesting-web/ssti-server-side-template-injection"
     ]
    },
-   "patterns": [
+   "mode": "taint",
+   "pattern-sources": [
     {
-     "pattern-either": [
-      {
-       "pattern": "Template($USER_INPUT)"
-      },
-      {
-       "pattern": "Template($USER_INPUT).render(...)"
-      },
-      {
-       "pattern": "from django.template import Template\n...\nTemplate($USER_INPUT)\n"
-      },
-      {
-       "pattern": "$TEMPLATE_STR = request.$METHOD.get(...)\n...\nTemplate($TEMPLATE_STR)\n"
-      },
-      {
-       "pattern": "$TEMPLATE_STR = request.$METHOD[...]\n...\nTemplate($TEMPLATE_STR)\n"
-      }
-     ]
+     "pattern": "request.$M.get(...)"
     },
     {
-     "pattern-not-regex": "Template\\(\\s*[\"'][^\"']*[\"']\\s*\\)"
+     "pattern": "request.$M[...]"
     },
     {
-     "pattern-not-inside": "$X = os.environ.get(...)\n...\nTemplate($X)"
+     "pattern": "request.$M"
     },
     {
-     "pattern-not-inside": "$X = os.getenv(...)\n...\nTemplate($X)"
+     "pattern": "$TEMPLATE_STR = request.$M.get(...)"
+    }
+   ],
+   "pattern-sinks": [
+    {
+     "pattern": "Template($X)",
+     "focus-metavariable": "$X"
+    }
+   ],
+   "pattern-sanitizers": [
+    {
+     "pattern": "os.environ.get(...)"
+    },
+    {
+     "pattern": "os.getenv(...)"
     }
    ]
   },
