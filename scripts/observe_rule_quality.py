@@ -93,9 +93,40 @@ def _fields_from_logs(iid: str, log_events: list) -> dict:
     return fields
 
 
+def _event_issue_ids(event: dict) -> list[str]:
+    ids = []
+    if event.get('issue_id'):
+        ids.append(event['issue_id'])
+    sample = event.get('negative_sample')
+    if isinstance(sample, dict) and sample.get('id'):
+        ids.append(sample['id'])
+    for v in (event.get('verdicts') or []):
+        if isinstance(v, dict) and v.get('issue_id'):
+            ids.append(v['issue_id'])
+    return ids
+
+
+def _fields_from_logs(iid: str, log_events: list) -> dict:
+    """Structured identity fields for one issue_id across all audits."""
+    fields = {}
+    audit_ids = set()
+    for _, event in log_events:
+        candidates = [event] + [v for v in (event.get('verdicts') or []) if isinstance(v, dict)]
+        for c in candidates:
+            if c.get('issue_id') != iid:
+                continue
+            for k in ('issue_id', 'rule_id', 'scanner', 'path', 'line', 'engine'):
+                if c.get(k) is not None:
+                    fields.setdefault(k, set()).add(c[k])
+            if event.get('audit_id'):
+                audit_ids.add(event['audit_id'])
+    return {'values': {k: sorted(v, key=str) for k, v in fields.items()},
+            'audit_ids': sorted(audit_ids)}
+
+
 def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
             exclude_audit_ids=(), exclude_targets=()) -> dict:
-    """Read logs/jobs REVERSE-ONLY. Exclusions apply to ALL log events."""
+    """Read logs/jobs READ-ONLY. Explicit exclusions apply to ALL events."""
     db = Path(db).resolve()
     con = connect_ro(db)
     try:
@@ -127,81 +158,133 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     finally:
         con.close()
 
-    # 1) Determine exclusion audit set FIRST (explicit only), then filter every
-    #    log event — otherwise excluded audits pollute global scanner/location rates.
+    # Exclusion audit set: explicit ids + known smoke + exact-target matches.
     excluded_audits = set(KNOWN_SMOKE_AUDIT_IDS) | set(exclude_audit_ids)
-    excluded_targets = set(exclude_targets)
     for job in jobs.values():
-        if job['target'] and job['target'] in excluded_targets:
+        if job['target'] and job['target'] in set(exclude_targets):
             excluded_audits.add(job['audit_id'])
+
+    # Authoritative issue registry: issue_id may repeat across audits (hash of
+    # path:line:rule). Keep ALL non-excluded occurrences, not just the first.
+    issue_occurrences = defaultdict(list)
+    for job in jobs.values():
+        for issue in job['result'].get('issues') or []:
+            if not isinstance(issue, dict) or not issue.get('id'):
+                continue
+            if job['audit_id'] in excluded_audits:
+                continue
+            issue_occurrences[issue['id']].append((issue, job))
+
+    # Reverse map for audit_id resolution: include ALL completed jobs, even
+    # excluded ones — otherwise a no-audit_id event from a smoke audit cannot
+    # be resolved and would incorrectly become 'unattributed' instead of
+    # 'excluded'. The exclusion decision is made AFTER resolution.
+    all_issue_audits = defaultdict(set)
+    for job in jobs.values():
+        for issue in job['result'].get('issues') or []:
+            if isinstance(issue, dict) and issue.get('id'):
+                all_issue_audits[issue['id']].add(job['audit_id'])
+    issue_to_audits = dict(all_issue_audits)
 
     log_events = []
     unattributed_events = []
     exclusions = []
     for lid, event in raw_events:
+        # Resolve audit_id: explicit, else reverse-lookup via issue ids.
         aid = event.get('audit_id')
+        if not aid:
+            for iid in _event_issue_ids(event):
+                if iid in issue_to_audits:
+                    resolved = issue_to_audits[iid]
+                    excluded_here = resolved & excluded_audits
+                    if excluded_here:
+                        # Any excluded audit in the candidate set -> conservative
+                        # exclusion; report ambiguity via issue_ids on the record.
+                        aid = sorted(excluded_here)[0]
+                        break
+                    if len(resolved) == 1:
+                        aid = next(iter(resolved))
+                        break
         if aid and aid in excluded_audits:
             exclusions.append({'log_id': lid, 'event': event.get('event'),
-                               'audit_id': aid, 'reason': 'excluded_audit_event'})
+                               'audit_id': aid, 'reason': 'excluded_audit_event',
+                               'issue_id': next((i for i in _event_issue_ids(event)), None)})
             continue
-        # Events with no audit_id cannot be tied to an excluded audit — report
-        # them explicitly instead of silently counting them in cleaned metrics.
-        if not aid and event.get('event') in ('scanner_completed', 'location_rejected',
-                                              'location_validated', 'human_review',
-                                              'model_triage', 'model_triage_abstained',
-                                              'model_triage_failed', 'audit_failed'):
-            unattributed_events.append({'log_id': lid, 'event': event.get('event')})
+        if not aid:
+            unattributed_events.append({'log_id': lid, 'event': event.get('event'),
+                                        'issue_ids': _event_issue_ids(event),
+                                        'reason': 'no_audit_id_and_no_job_issue_match'})
         log_events.append((lid, event))
 
-    # 2) Authoritative issue registry: ONLY issues from completed jobs.
-    by_issue = {}
-    for job in jobs.values():
-        for issue in job['result'].get('issues') or []:
-            if isinstance(issue, dict) and issue.get('id'):
-                by_issue.setdefault(issue['id'], (issue, job))
-
-    # 3) Only log issue ids that resolve to a completed-job issue are real.
-    seen_log_issue_ids = set()
+    seen_ids = set()
     orphan_issue_ids = set()
     for _, event in log_events:
-        ids = [event.get('issue_id')]
-        ids.extend(v.get('issue_id') for v in (event.get('verdicts') or [])
-                   if isinstance(v, dict))
-        for iid in ids:
-            if not iid:
-                continue
-            if iid in by_issue:
-                seen_log_issue_ids.add(iid)
+        for iid in _event_issue_ids(event):
+            if iid in issue_occurrences:
+                seen_ids.add(iid)
             else:
                 orphan_issue_ids.add(iid)
 
     findings = {}
-    for iid in sorted(seen_log_issue_ids):
-        issue, job = by_issue[iid]
-        reason = is_excluded(issue, job, smoke_ids=KNOWN_SMOKE_AUDIT_IDS,
-                             exclude_audit_ids=exclude_audit_ids,
-                             exclude_targets=exclude_targets)
-        if reason:
-            exclusions.append({'issue_id': iid, 'reason': reason,
-                               'audit_id': job.get('audit_id')})
-            continue
-        loc = (issue.get('locations') or [{}])[0] if issue.get('locations') else {}
-        ev = issue.get('evidence') or []
-        structured = _fields_from_logs(iid, log_events)
-        merged = {'rule_id': structured.get('rule_id') or rule_from_evidence(ev),
-                  'scanner': structured.get('scanner') or scanner_from_evidence(ev),
-                  'path': structured.get('path') or (loc.get('path') if isinstance(loc, dict) else None),
-                  'line': structured.get('line') if structured.get('line') is not None
-                          else (loc.get('line') if isinstance(loc, dict) else None)}
+    field_conflicts = []
+    for iid in sorted(seen_ids):
+        occs = issue_occurrences[iid]
+        structured_all = _fields_from_logs(iid, log_events)
+        keys = ('rule_id', 'scanner', 'path', 'line')
+        merged = {}
+        conflicts = {}
+        for k in keys:
+            candidates = {v for v in structured_all['values'].get(k, []) if v is not None}
+            # Fall back to each occurrence's evidence/location, aggregate all.
+            for issue, _ in occs:
+                loc = (issue.get('locations') or [{}])[0] if issue.get('locations') else {}
+                ev = issue.get('evidence') or []
+                fallback = {'rule_id': rule_from_evidence(ev),
+                            'scanner': scanner_from_evidence(ev),
+                            'path': loc.get('path') if isinstance(loc, dict) else None,
+                            'line': loc.get('line') if isinstance(loc, dict) else None}[k]
+                if fallback is not None:
+                    candidates.add(fallback)
+            if candidates:
+                ordered = sorted(candidates, key=str)
+                merged[k] = ordered[0]
+                if len(ordered) > 1:
+                    conflicts[k] = ordered
+        if conflicts:
+            field_conflicts.append({'issue_id': iid, 'conflicts': conflicts,
+                                    'note': 'multiple values across audits; first sorted value used for grouping, all reported here'})
         findings[iid] = {'issue_id': iid, **merged,
-                         'audit_id': job['audit_id'],
-                         'from_structured_log': bool(structured),
-                         'structured_log_fields': structured}
+                         'audit_ids': sorted({j['audit_id'] for _, j in occs}),
+                         'occurrence_count': len(occs),
+                         'from_structured_log': any(
+                             v for v in structured_all['values'].values()),
+                         'structured_log_fields': structured_all['values'],
+                         'field_conflicts': conflicts}
+
+    # Review decisions: collect ALL valid decisions for this issue across
+    # non-excluded audits; conflicting decisions are reported, never overwritten.
+    review_conflicts = []
+    decisions = {}
+    for iid in findings:
+        choices = {}
+        for (aid, riid), decision in reviews.items():
+            if riid != iid or aid in excluded_audits:
+                continue
+            if decision in ('confirmed', 'false_positive'):
+                choices[aid] = decision
+        distinct = sorted(set(choices.values()))
+        if len(distinct) > 1:
+            review_conflicts.append({'issue_id': iid, 'decisions': choices,
+                                     'note': 'conflicting review decisions across audits; not counted as resolved'})
+        elif distinct:
+            decisions[iid] = distinct[0]
 
     return {'findings': findings, 'log_events': log_events,
             'unattributed_events': unattributed_events,
             'orphan_issue_ids': orphan_issue_ids,
-            'reviews': reviews, 'exclusions': exclusions, 'jobs': jobs,
+            'reviews': reviews, 'decisions': decisions,
+            'review_conflicts': review_conflicts, 'field_conflicts': field_conflicts,
+            'exclusions': exclusions, 'jobs': jobs,
             'excluded_audits': excluded_audits,
             'since_log_id': since_log_id, 'db': str(db), 'max_log_id': max_log_id}
 
@@ -217,25 +300,27 @@ def summarize(collected: dict) -> dict:
     log_events = collected['log_events']
     FIELDS = ('issue_id', 'rule_id', 'scanner', 'path', 'line', 'engine')
 
-    # Review decisions must match (audit_id, issue_id) exactly. Only
-    # confirmed/false_positive count as reviewed; unreviewed stays unreviewed.
-    VALID_DECISIONS = {'confirmed', 'false_positive'}
-    decisions = {}
-    for (aid, iid), decision in reviews.items():
-        if iid in findings and findings[iid]['audit_id'] == aid and decision in VALID_DECISIONS:
-            decisions[iid] = decision
+    # Decisions were resolved per issue across non-excluded audits in collect
+    # (exact (audit_id, issue_id), confirmed/false_positive only, conflicts listed).
+    decisions = collected['decisions']
 
     # Location errors are an EVENT-LEVEL metric: current engine often logs
     # location_rejected with only negative_sample and no issue_id, so per-issue
     # attribution is not reliable. Count unattributable rejections separately.
+    unattributed_ids = {x['log_id'] for x in collected['unattributed_events']}
     location_validated = 0
     location_rejected = 0
     location_rejected_unattributed = 0
-    for _, event in log_events:
+    clean_validated = 0
+    clean_rejected = 0
+    for lid, event in log_events:
+        clean = lid not in unattributed_ids
         if event.get('event') == 'location_validated':
             location_validated += 1
+            clean_validated += clean
         elif event.get('event') == 'location_rejected':
             location_rejected += 1
+            clean_rejected += clean
             sample = event.get('negative_sample')
             iid = event.get('issue_id') or (sample.get('id') if isinstance(sample, dict) else None)
             if not iid:
@@ -245,12 +330,17 @@ def summarize(collected: dict) -> dict:
     # model_triage_failed / audit_failed are reported separately, never mixed.
     scanner_failures = 0
     scanner_events = 0
+    clean_scanner_failures = 0
+    clean_scanner_events = 0
     other_pipeline_failures = Counter()
-    for _, event in log_events:
+    for lid, event in log_events:
+        clean = lid not in unattributed_ids
         if event.get('event') == 'scanner_completed':
             scanner_events += 1
+            clean_scanner_events += clean
             if event.get('status') != 'completed':
                 scanner_failures += 1
+                clean_scanner_failures += clean
         elif event.get('event') in ('model_triage_failed', 'audit_failed'):
             other_pipeline_failures[event['event']] += 1
 
@@ -258,7 +348,7 @@ def summarize(collected: dict) -> dict:
                                    'confirmed': set(), 'false_positive': set(),
                                    'fields': defaultdict(set)})
     for iid, f in findings.items():
-        rid = f['rule_id'] or '(missing rule_id)'
+        rid = f.get('rule_id') or '(missing rule_id)'
         d = by_rule[rid]
         d['findings'].add(iid)
         decision = decisions.get(iid)
@@ -269,7 +359,7 @@ def summarize(collected: dict) -> dict:
             elif decision == 'false_positive':
                 d['false_positive'].add(iid)
         for k in FIELDS:
-            if f['structured_log_fields'].get(k) is not None or f.get(k) is not None:
+            if f.get('structured_log_fields', {}).get(k) is not None or f.get(k) is not None:
                 d['fields'][k].add(iid)
 
     rules = []
@@ -315,19 +405,30 @@ def summarize(collected: dict) -> dict:
         'orphan_note': 'log issue_ids with no completed-job issue; excluded from distinct finding count and 50-item threshold',
         'unattributed_events': collected['unattributed_events'],
         'unattributed_event_count': len(collected['unattributed_events']),
-        'unattributed_note': 'events without audit_id cannot be tied to excluded audits; listed, not silently counted',
+        'unattributed_note': 'events with no resolvable audit_id; listed and EXCLUDED from all CLEAN metrics (ALL metrics still include them)',
+        'field_conflicts': collected['field_conflicts'],
+        'review_conflicts': collected['review_conflicts'],
+        'conflict_note': 'issue_id is a path:line:rule hash and can repeat across audits; conflicts are listed, never silently overwritten',
         'reviewed_total': len(decisions),
         'unreviewed_total': total - len(decisions),
         'max_log_id': collected['max_log_id'],
         'scanner_completed_events': scanner_events,
         'scanner_failures': scanner_failures,
-        'scanner_failure_rate': _rate(scanner_failures, scanner_events),
-        'scanner_failure_data_source': 'logs scanner_completed only; numerator=status != completed; denominator=all scanner_completed; N/A if none',
+        'scanner_failure_rate_all': _rate(scanner_failures, scanner_events),
+        'scanner_completed_events_clean': clean_scanner_events,
+        'scanner_failures_clean': clean_scanner_failures,
+        'scanner_failure_rate_clean': _rate(clean_scanner_failures, clean_scanner_events),
+        'scanner_failure_rate': _rate(clean_scanner_failures, clean_scanner_events),
+        'scanner_failure_data_source': 'logs scanner_completed only; ALL=all events incl. unattributed, CLEAN=excludes unattributed events; numerator=status != completed; N/A if denominator=0',
         'other_pipeline_failures': dict(other_pipeline_failures),
         'other_pipeline_failures_note': 'model_triage_failed/audit_failed are NOT scanner failures; excluded from scanner metrics',
         'location_error_events': location_rejected,
         'location_validated_events': location_validated,
-        'location_error_event_rate': _rate(location_rejected, location_validated + location_rejected),
+        'location_error_event_rate_all': _rate(location_rejected, location_validated + location_rejected),
+        'location_error_events_clean': clean_rejected,
+        'location_validated_events_clean': clean_validated,
+        'location_error_event_rate_clean': _rate(clean_rejected, clean_validated + clean_rejected),
+        'location_error_event_rate': _rate(clean_rejected, clean_validated + clean_rejected),
         'location_rejected_unattributed': location_rejected_unattributed,
         'location_error_data_source': 'event-level logs location_rejected/(location_validated+location_rejected); per-issue attribution unavailable when only negative_sample is logged',
         'rules': rules,
@@ -361,8 +462,9 @@ def main():
                  f"- 距 50 条还差: **{data['remaining_to_target']}**",
                  f"- 已复核: {data['reviewed_total']} / 未复核: {data['unreviewed_total']}",
                  f"- 排除样本: {data['exclusion_count']}",
-                 f"- 扫描失败: {data['scanner_failures']} / scanner_completed {data['scanner_completed_events']}（率 {data['scanner_failure_rate']}）",
-                 f"- 定位错误(事件级): {data['location_error_events']} / (validated+rejected {data['location_validated_events'] + data['location_error_events']})（率 {data['location_error_event_rate']}），无 issue_id 的 rejected: {data['location_rejected_unattributed']}", '',
+                 f"- 扫描失败(全量): {data['scanner_failures']}/{data['scanner_completed_events']} 率 {data['scanner_failure_rate_all']}；(已清洗): {data['scanner_failures_clean']}/{data['scanner_completed_events_clean']} 率 {data['scanner_failure_rate_clean']}",
+                 f"- 定位错误(事件级, 全量): {data['location_error_events']}/{data['location_validated_events'] + data['location_error_events']} 率 {data['location_error_event_rate_all']}；(已清洗): {data['location_error_events_clean']}/{data['location_validated_events_clean'] + data['location_error_events_clean']} 率 {data['location_error_event_rate_clean']}",
+                 f"- 无归属事件: {data['unattributed_event_count']}（仅记录，不进入已清洗指标）；孤儿 issue_id: {data['orphan_count']}；字段冲突: {len(data['field_conflicts'])}；复核冲突: {len(data['review_conflicts'])}", '',
                  '| rule_id | findings | 已复核 | 确认率 | 误报率 | 定位错误率 |',
                  '|---|---:|---:|---:|---:|---:|']
         for r in data['rules']:
@@ -372,7 +474,20 @@ def main():
         if data['excluded_samples']:
             lines += ['', '## 排除清单', '']
             for x in data['excluded_samples']:
-                lines.append(f"- {x['issue_id']}: {x['reason']} (audit_id={x.get('audit_id')})")
+                if x.get('issue_id'):
+                    lines.append(f"- issue {x['issue_id']}: {x.get('reason')} (audit_id={x.get('audit_id')})")
+                else:
+                    # excluded_audit_event records have log_id/event, no issue_id.
+                    lines.append(f"- log#{x.get('log_id')} event={x.get('event')}: "
+                                 f"{x.get('reason')} (audit_id={x.get('audit_id')})")
+        if data['field_conflicts']:
+            lines += ['', '## 结构化字段冲突（跨审计）', '']
+            for x in data['field_conflicts']:
+                lines.append(f"- {x['issue_id']}: {x['conflicts']}")
+        if data['review_conflicts']:
+            lines += ['', '## 复核决定冲突（跨审计）', '']
+            for x in data['review_conflicts']:
+                lines.append(f"- {x['issue_id']}: {x['decisions']}")
         args.md_out.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     print(text)
 

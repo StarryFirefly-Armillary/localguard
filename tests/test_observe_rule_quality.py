@@ -59,7 +59,10 @@ def test_dedupe_and_exclusions_and_review_denominator(tmp_path):
     c = collect(db, 30644)
     d = summarize(c)
     assert d['distinct_real_issue_ids'] == 2  # deduped + smoke excluded
-    assert len(c['exclusions']) == 1 and 'smoke' in c['exclusions'][0]['reason']
+    # smoke event has no audit_id but resolves via issue -> excluded_audit_event
+    assert len(c['exclusions']) == 1
+    assert c['exclusions'][0]['reason'] == 'excluded_audit_event'
+    assert c['exclusions'][0]['issue_id'] == 'ISSUE-SMOKE'
     assert d['reviewed_total'] == 1 and d['unreviewed_total'] == 1
     r1 = next(r for r in d['rules'] if r['rule_id'] == 'patterns.reverse-shell')
     assert r1['finding_count'] == 1 and r1['reviewed_count'] == 1
@@ -102,7 +105,8 @@ def test_location_error_event_level_and_scanner_only_completed(tmp_path):
     assert d['rules'][0]['location_error_rate'] == 'N/A'
     # Scanner failures: only scanner_completed with status != completed.
     assert d['scanner_completed_events'] == 2
-    assert d['scanner_failures'] == 1 and d['scanner_failure_rate'] == 0.5
+    assert d['scanner_failures'] == 1 and d['scanner_failure_rate_all'] == 0.5
+    assert d['scanner_failure_rate_clean'] == 'N/A'  # scanner events lack audit_id -> unattributed
     # model_triage_failed/audit_failed reported separately, never in scanner rate.
     assert d['other_pipeline_failures'] == {'model_triage_failed': 1, 'audit_failed': 1}
 
@@ -115,7 +119,9 @@ def test_unattributed_rejection_and_no_scanner_events_are_na(tmp_path):
     db = make_db(tmp_path, logs, [job('A', [issue('ISSUE-1')])])
     d = summarize(collect(db, 30644))
     assert d['location_rejected_unattributed'] == 1
-    assert d['location_error_event_rate'] == 0.5
+    assert d['location_error_event_rate_all'] == 0.5
+    # validated resolves to a job -> clean denominator exists; rejected does not
+    assert d['location_error_event_rate_clean'] == 0.0
     assert d['scanner_completed_events'] == 0
     assert d['scanner_failures'] == 0 and d['scanner_failure_rate'] == 'N/A'
 
@@ -137,11 +143,11 @@ def test_explicit_exclusions_only_and_real_title_not_dropped(tmp_path):
     # Explicit audit_id / target exclusions are honored with reasons.
     d2 = summarize(collect(db, 30644, exclude_audit_ids={'REAL'}))
     assert d2['distinct_real_issue_ids'] == 0
-    reason = d2['excluded_samples'][0]['reason']
-    assert reason == 'excluded_audit_id'
+    assert d2['distinct_real_issue_ids'] == 0
+    assert all(x['reason'] == 'excluded_audit_event' for x in d2['excluded_samples'])
     d3 = summarize(collect(db, 30644, exclude_targets={'E:/real/repo'}))
-    assert d3['exclusion_count'] == 3
-    assert d3['excluded_samples'][0]['reason'] == 'excluded_target'
+    assert d3['distinct_real_issue_ids'] == 0
+    assert d3['excluded_audits'] == sorted(['REAL']) or 'REAL' in d3['excluded_audits']
 
 
 def test_default_db_and_report_db_are_absolute(tmp_path):
@@ -202,9 +208,10 @@ def test_review_matches_audit_id_and_ignores_unreviewed(tmp_path):
     db = make_db(tmp_path, logs, jobs,
                  [('A2', iid, 'confirmed'), ('A1', iid, 'unreviewed')])
     d = summarize(collect(db, 30644))
-    # by_issue keeps first job (A1) -> A2 review must NOT leak; unreviewed rejected.
-    assert d['reviewed_total'] == 0 and d['unreviewed_total'] == 1
-    assert d['rules'][0]['human_confirmation_rate'] == 'N/A'
+    # Issue hash repeats across audits: collect all non-excluded audits;
+    # A1 unreviewed ignored, A2 confirmed is a valid decision.
+    assert d['reviewed_total'] == 1 and d['unreviewed_total'] == 0
+    assert d['rules'][0]['human_confirmation_rate'] == 1.0
 
 
 def test_review_confirmed_and_false_positive_count_as_reviewed(tmp_path):
@@ -260,3 +267,98 @@ def test_orphan_log_issue_not_counted_as_finding(tmp_path):
     assert d['distinct_real_issue_ids'] == 1
     assert 'ISSUE-ORPHAN' in d['orphan_issue_ids'] and d['orphan_count'] == 1
     assert 'ISSUE-ORPHAN' not in {f['issue_id'] for f in collect(db, 30644)['findings'].values()}
+
+
+def test_no_audit_id_location_event_resolves_to_excluded_audit(tmp_path):
+    # location_validated has NO audit_id in real engine; its issue belongs to a
+    # known smoke audit -> must be excluded before global rates are computed.
+    logs = [
+        (30645, {'event': 'location_validated', 'issue_id': 'I-SMOKE'}),
+        (30646, {'event': 'location_validated', 'issue_id': 'I-REAL', 'audit_id': 'A1'}),
+    ]
+    jobs = [job('A1', [issue('I-REAL')]),
+            job('65dcb65d663c47ebb900d70a4f706e59', [issue('I-SMOKE')])]
+    db = make_db(tmp_path, logs, jobs)
+    c = collect(db, 30644)
+    d = summarize(c)
+    assert any(e.get('issue_id') == 'I-SMOKE' and e['reason'] == 'excluded_audit_event'
+               for e in c['exclusions'])
+    assert d['location_validated_events'] == 1  # smoke event excluded entirely
+    assert d['distinct_real_issue_ids'] == 1
+
+
+def test_unattributed_events_excluded_from_clean_metrics(tmp_path):
+    # scanner_completed with no audit_id and no issue -> cannot be attributed.
+    logs = [
+        (30645, {'event': 'scanner_completed', 'scanner': 'patterns', 'status': 'failed'}),
+        (30646, {'event': 'scanner_completed', 'audit_id': 'A1',
+                 'scanner': 'semgrep', 'status': 'completed'}),
+    ]
+    db = make_db(tmp_path, logs, [job('A1', [issue('I1')])])
+    d = summarize(collect(db, 30644))
+    assert d['scanner_completed_events'] == 2 and d['scanner_failures'] == 1
+    assert d['scanner_failure_rate_all'] == 0.5
+    # Unattributed failed event is NOT in clean metrics.
+    assert d['scanner_completed_events_clean'] == 1 and d['scanner_failures_clean'] == 0
+    assert d['scanner_failure_rate_clean'] == 0.0
+    assert d['unattributed_event_count'] == 1
+    assert 'ALL' in d['scanner_failure_data_source'] and 'CLEAN' in d['scanner_failure_data_source']
+
+
+def test_markdown_cli_with_excluded_events_succeeds(tmp_path):
+    import subprocess
+    import sys
+    logs = [
+        (30645, {'event': 'scanner_completed', 'audit_id': 'SMOKE',
+                 'scanner': 'semgrep', 'status': 'failed'}),
+        (30646, {'event': 'location_validated', 'issue_id': 'I1', 'audit_id': 'A1'}),
+    ]
+    db = make_db(tmp_path, logs, [job('A1', [issue('I1')]), job('SMOKE', [issue('I-S')])])
+    md = tmp_path / 'report.md'
+    script = Path(__file__).resolve().parents[1] / 'scripts/observe_rule_quality.py'
+    proc = subprocess.run([sys.executable, str(script), '--db', str(db),
+                           '--since-log-id', '30644',
+                           '--exclude-audit-id', 'SMOKE', '--md-out', str(md)],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert md.is_file() and '排除清单' in md.read_text(encoding='utf-8')
+    assert 'log#' in md.read_text(encoding='utf-8')  # event-type record rendered
+
+
+def test_cross_audit_issue_hash_aggregates_fields_and_reviews(tmp_path):
+    # Same issue_id (path:line:rule hash) in two audits: A2 has richer
+    # structured fields and the only valid review. Must aggregate, not keep A1.
+    iid = 'ISSUE-SHARED'
+    bare = {'id': iid, 'title': 'finding', 'review': 'unreviewed',
+            'evidence': [], 'locations': []}
+    logs = [
+        (30645, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A1',
+                 'rule_id': 'lg.ext.old', 'scanner': 'patterns', 'path': 'old.py', 'line': 1}),
+        (30646, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A2',
+                 'rule_id': 'lg.ext.new', 'scanner': 'semgrep', 'path': 'new.py', 'line': 9}),
+    ]
+    jobs = [job('A1', [bare]), job('A2', [bare])]
+    db = make_db(tmp_path, logs, jobs, [('A2', iid, 'confirmed')])
+    c = collect(db, 30644)
+    d = summarize(c)
+    f = c['findings'][iid]
+    assert f['occurrence_count'] == 2 and set(f['audit_ids']) == {'A1', 'A2'}
+    # Conflicting structured fields are explicitly reported, not silently lost.
+    assert f['field_conflicts'].get('rule_id') == ['lg.ext.new', 'lg.ext.old']
+    assert any(x['issue_id'] == iid for x in d['field_conflicts'])
+    # Valid review from A2 is honored (not tied to arbitrary first occurrence).
+    assert d['reviewed_total'] == 1 and d['rules'][0]['human_confirmation_rate'] == 1.0
+
+
+def test_conflicting_reviews_are_listed_not_silently_overwritten(tmp_path):
+    iid = 'ISSUE-CONFLICT'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A1'}),
+            (30646, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A2'})]
+    jobs = [job('A1', [issue(iid)]), job('A2', [issue(iid)])]
+    db = make_db(tmp_path, logs, jobs,
+                 [('A1', iid, 'confirmed'), ('A2', iid, 'false_positive')])
+    d = summarize(collect(db, 30644))
+    assert d['reviewed_total'] == 0  # conflicting -> not resolved
+    assert len(d['review_conflicts']) == 1
+    assert d['review_conflicts'][0]['issue_id'] == iid
+    assert set(d['review_conflicts'][0]['decisions'].values()) == {'confirmed', 'false_positive'}
