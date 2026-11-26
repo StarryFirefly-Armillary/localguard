@@ -299,9 +299,10 @@ def test_unattributed_events_excluded_from_clean_metrics(tmp_path):
     assert d['scanner_completed_events'] == 2 and d['scanner_failures'] == 1
     assert d['scanner_failure_rate_all'] == 0.5
     # Unattributed failed event is NOT in clean metrics.
-    assert d['scanner_completed_events_clean'] == 0 and d['scanner_failures_clean'] == 0
-    assert d['scanner_failure_rate_clean'] == 'N/A'  # no attributable scanner events
-    assert d['unattributed_event_count'] == 2  # both scanner events lack session/issue
+    # Explicit audit_id event is clean; pointer-less event is unattributed.
+    assert d['scanner_completed_events_clean'] == 1 and d['scanner_failures_clean'] == 0
+    assert d['scanner_failure_rate_clean'] == 0.0
+    assert d['unattributed_event_count'] == 1
     assert 'ALL' in d['scanner_failure_data_source'] and 'CLEAN' in d['scanner_failure_data_source']
 
 
@@ -467,3 +468,62 @@ def test_full_history_diagnostic_has_no_tool_noise(tmp_path):
     assert d['nonmetric_unattributed_count'] == 40
     assert d['unattributed_event_count'] == 0
     assert d['location_validated_events_clean'] == 5  # not dropped by tool noise
+
+
+def test_explicit_audit_id_beats_missing_session_and_issue(tmp_path):
+    # scanner_completed with explicit audit_id but no session/issue must be
+    # resolved and counted in CLEAN metrics (highest priority).
+    logs = [(30645, {'event': 'scanner_completed', 'audit_id': 'A1',
+                     'scanner': 'patterns', 'status': 'completed'})]
+    db = make_db(tmp_path, logs, [job('A1', [issue('I1')])])
+    c = collect(db, 30644)
+    d = summarize(c)
+    assert c['unattributed_events'] == []
+    assert d['scanner_completed_events'] == 1
+    assert d['scanner_completed_events_clean'] == 1
+    assert d['scanner_failure_rate_clean'] == 0.0
+
+
+def test_failed_audit_fields_do_not_pollute_completed_finding(tmp_path):
+    iid = 'ISSUE-POLLUTE'
+    logs = [
+        (30645, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'REAL',
+                 'session': 'REAL', 'rule_id': 'rule.real', 'scanner': 'semgrep'}),
+        (30646, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'FAILED',
+                 'session': 'FAILED', 'rule_id': 'rule.bad', 'scanner': 'gitleaks'}),
+    ]
+    # Only REAL is allowed (FAILED is not a completed job in jobs list).
+    db = make_db(tmp_path, logs, [job('REAL', [issue(iid, rule='fallback.old')])])
+    c = collect(db, 30644)
+    f = c['findings'][iid]
+    assert f['rule_id'] == 'rule.real' and f['scanner'] == 'semgrep'
+    assert not f['field_conflicts']  # failed-audit fields must not create conflict
+
+
+def test_two_nonexcluded_audits_same_issue_are_ambiguous(tmp_path):
+    iid = 'ISSUE-AMB2'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid})]  # no session/audit_id
+    jobs = [job('A1', [issue(iid)]), job('A2', [issue(iid)])]
+    c = collect(make_db(tmp_path, logs, jobs), 30644)
+    assert len(c['ambiguous_events']) == 1
+    assert set(c['ambiguous_events'][0]['candidate_audits']) == {'A1', 'A2'}
+    assert not c['exclusions']  # neither audit excluded
+    d = summarize(c)
+    # Ambiguous metric event is kept unclean -> clean denominator excludes it.
+    assert d['location_validated_events'] == 1
+    assert d['location_validated_events_clean'] == 0
+
+
+def test_full_history_explicit_scanner_audit_ids_are_clean(tmp_path):
+    # 75 explicit-audit scanner_completed events: none may be unattributed.
+    logs = []
+    lid = 30645
+    for i in range(75):
+        logs.append((lid, {'event': 'scanner_completed', 'audit_id': f'A{i}',
+                           'scanner': 'patterns', 'status': 'completed'})); lid += 1
+    jobs = [job(f'A{i}', [issue(f'I{i}')]) for i in range(75)]
+    d = summarize(collect(make_db(tmp_path, logs, jobs), 30644))
+    assert d['scanner_completed_events'] == 75
+    assert d['scanner_completed_events_clean'] == 75
+    assert d['unattributed_event_count'] == 0
+    assert d['scanner_failure_rate_clean'] == 0.0

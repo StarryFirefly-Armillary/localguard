@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -58,27 +57,8 @@ def scanner_from_evidence(evidence: list | None) -> str | None:
     return None
 
 
-def is_excluded(issue: dict, meta: dict, smoke_ids=KNOWN_SMOKE_AUDIT_IDS,
-                exclude_audit_ids=(), exclude_targets=()) -> str | None:
-    """Return exclusion reason, or None for a real finding.
-
-    Only explicit identifiers are honored: known smoke audit ids, CLI-provided
-    audit ids, and CLI-provided exact target matches. Titles, paths and other
-    free text are NEVER substring-matched — 'review'/'eval'/'test' in a real
-    finding's title must not silently drop it.
-    """
-    aid = meta.get('audit_id')
-    if aid in smoke_ids:
-        return 'known_smoke_audit_id'
-    if aid in set(exclude_audit_ids):
-        return 'excluded_audit_id'
-    target = str(meta.get('target') or '')
-    if target and target in set(exclude_targets):
-        return 'excluded_target'
-    return None
-
-
 def _event_issue_ids(event: dict) -> list[str]:
+    """All issue ids referenced by an event (direct, sample, verdicts)."""
     ids = []
     if event.get('issue_id'):
         ids.append(event['issue_id'])
@@ -91,11 +71,16 @@ def _event_issue_ids(event: dict) -> list[str]:
     return ids
 
 
-def _fields_from_logs(iid: str, log_events: list) -> dict:
-    """Structured identity fields for one issue_id across all audits."""
+def _fields_from_logs(iid: str, log_events: list, allowed_audit_ids: set) -> dict:
+    """Structured identity fields from THIS finding's occurrence audits only.
+
+    Failed/unrelated audits with the same deterministic issue_id must not
+    pollute a completed finding's identity.
+    """
     fields = {}
-    audit_ids = set()
-    for _, event in log_events:
+    for _, event, resolved_aid in log_events:
+        if resolved_aid not in allowed_audit_ids:
+            continue
         candidates = [event] + [v for v in (event.get('verdicts') or []) if isinstance(v, dict)]
         for c in candidates:
             if c.get('issue_id') != iid:
@@ -103,10 +88,7 @@ def _fields_from_logs(iid: str, log_events: list) -> dict:
             for k in ('issue_id', 'rule_id', 'scanner', 'path', 'line', 'engine'):
                 if c.get(k) is not None:
                     fields.setdefault(k, set()).add(c[k])
-            if event.get('audit_id'):
-                audit_ids.add(event['audit_id'])
-    return {'values': {k: sorted(v, key=str) for k, v in fields.items()},
-            'audit_ids': sorted(audit_ids)}
+    return {'values': {k: sorted(v, key=str) for k, v in fields.items()}}
 
 
 METRIC_EVENTS = {'scanner_completed', 'location_validated', 'location_rejected',
@@ -180,34 +162,36 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     ambiguous_events = []
     for lid, event in raw_events:
         event_name = event.get('event')
-        # 1) PREFER exact session resolution.
+        # 1) EXPLICIT audit_id always wins (highest priority).
+        aid = event.get('audit_id')
+        resolved_by = 'explicit' if aid else None
+        # 2) session resolution only when audit_id absent.
         session = event.get('session')
-        aid = None
-        resolved_by = None
-        if session:
+        if not aid and session:
             candidates = session_to_audits.get(session) or set()
-            # 'base:audit_id' form: try suffix as well.
             if not candidates and ':' in session:
                 candidates = session_to_audits.get(session.split(':')[-1]) or set()
             if len(candidates) == 1:
                 aid = next(iter(candidates)); resolved_by = 'session'
-        # 2) Fall back to issue reverse-lookup ONLY if session absent/unresolved.
-        candidates = set()
+            elif len(candidates) > 1:
+                ambiguous_events.append({'log_id': lid, 'event': event_name,
+                                         'candidate_audits': sorted(candidates),
+                                         'resolved_by': 'session',
+                                         'note': 'multiple session candidates; unresolved'})
+        # 3) issue reverse-lookup only when still unresolved.
         if not aid:
+            candidates = set()
             for iid in _event_issue_ids(event):
                 candidates |= all_issue_audits.get(iid, set())
-            if candidates:
+            if len(candidates) == 1:
+                aid = next(iter(candidates)); resolved_by = 'issue'
+            elif len(candidates) > 1:
                 excluded_here = candidates & excluded_audits
-                if len(candidates) == 1:
-                    aid = next(iter(candidates)); resolved_by = 'issue'
-                elif excluded_here and excluded_here == candidates:
-                    aid = sorted(excluded_here)[0]; resolved_by = 'issue_all_excluded'
-                elif excluded_here:
-                    # Ambiguous: never arbitrarily pick an excluded audit.
-                    ambiguous_events.append({'log_id': lid, 'event': event_name,
-                                             'candidate_audits': sorted(candidates),
-                                             'excluded_candidates': sorted(excluded_here),
-                                             'note': 'ambiguous audit resolution: kept, not force-excluded'})
+                ambiguous_events.append({'log_id': lid, 'event': event_name,
+                                         'candidate_audits': sorted(candidates),
+                                         'excluded_candidates': sorted(excluded_here),
+                                         'resolved_by': 'issue',
+                                         'note': 'multiple audit candidates; kept unclean, never force-excluded'})
         if aid and aid in excluded_audits:
             exclusions.append({'log_id': lid, 'event': event_name, 'audit_id': aid,
                                'reason': 'excluded_audit_event',
@@ -220,11 +204,11 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
                                         'reason': 'no_session_or_issue_audit_match'})
         elif not aid:
             nonmetric_unattributed_count += 1  # tool_call/tool_evidence/model_explanations...
-        log_events.append((lid, event))
+        log_events.append((lid, event, aid))  # (log_id, event, resolved_audit_id)
 
     seen_ids = set()
     orphan_issue_ids = set()
-    for _, event in log_events:
+    for _, event, _aid in log_events:
         for iid in _event_issue_ids(event):
             (seen_ids if iid in issue_occurrences else orphan_issue_ids).add(iid)
 
@@ -232,7 +216,8 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     field_conflicts = []
     for iid in sorted(seen_ids):
         occs = issue_occurrences[iid]
-        structured_all = _fields_from_logs(iid, log_events)
+        occurrence_audits = {j['audit_id'] for _, j in occs}
+        structured_all = _fields_from_logs(iid, log_events, occurrence_audits)
         merged = {}
         conflicts = {}
         for k in ('rule_id', 'scanner', 'path', 'line'):
@@ -307,7 +292,6 @@ def _rate(numerator: int, denominator: int):
 
 def summarize(collected: dict) -> dict:
     findings = collected['findings']
-    reviews = collected['reviews']
     log_events = collected['log_events']
     FIELDS = ('issue_id', 'rule_id', 'scanner', 'path', 'line', 'engine')
 
@@ -324,8 +308,9 @@ def summarize(collected: dict) -> dict:
     location_rejected_unattributed = 0
     clean_validated = 0
     clean_rejected = 0
-    for lid, event in log_events:
-        clean = lid not in unattributed_ids
+    unclean_ids = unattributed_ids | {x['log_id'] for x in collected['ambiguous_events']}
+    for lid, event, _aid in log_events:
+        clean = lid not in unclean_ids
         if event.get('event') == 'location_validated':
             location_validated += 1
             clean_validated += clean
@@ -344,8 +329,8 @@ def summarize(collected: dict) -> dict:
     clean_scanner_failures = 0
     clean_scanner_events = 0
     other_pipeline_failures = Counter()
-    for lid, event in log_events:
-        clean = lid not in unattributed_ids
+    for lid, event, _aid in log_events:
+        clean = lid not in unclean_ids
         if event.get('event') == 'scanner_completed':
             scanner_events += 1
             clean_scanner_events += clean
