@@ -84,7 +84,7 @@ def xxe_fixed_literal():
 
 # --- django-ssti-template ---
 def django_ssti_unsafe(request):
-    # ruleid: lg.ext.django-ssti-template  (sink on following Template call)
+    # line below is the taint SOURCE, not the sink: taint rule must NOT flag it
     tpl = request.GET["t"]
     # ruleid: lg.ext.django-ssti-template
     return HttpResponse(Template(tpl).render())

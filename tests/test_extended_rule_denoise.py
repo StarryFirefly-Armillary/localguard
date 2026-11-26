@@ -1,12 +1,10 @@
-"""Extended-rule additive denoise regression (real offline Semgrep).
+"""Extended-rule denoise + sink-localization regression (real offline Semgrep).
 
 Fixtures are ARTIFICIAL STATIC text: never import, execute, or install them.
-This verifies that additive exclusions preserve every original detection while
-suppressing the documented safe contexts. No model, no data writes.
-
-Known limitation (NOT asserted here): django-ssti-template still reports a
-source line for multi-line taint patterns; sink localization needs a separate
-taint-mode rewrite and is intentionally out of scope for this additive change.
+Verifies that additive exclusions preserve original detections while
+suppressing documented safe contexts, and that django-ssti-template (now a
+taint rule focused on Template()) flags only the sink line — the taint SOURCE
+line is deliberately NOT an expected finding. No model, no data writes.
 """
 from __future__ import annotations
 
@@ -86,8 +84,9 @@ class ExtendedRuleDenoiseTests(unittest.TestCase):
         fp = sorted(self.hits - self.positive - self.negative)
         self.assertEqual(fp, [], f'unexpected hits: {fp}')
 
-    def test_original_calls_still_detected(self):
-        # P0 regression guard: random.random/shuffle and compile() must stay.
+    def test_expected_positions_all_detected(self):
+        # Includes P0 guards (random.random/shuffle, compile()) and sink-line
+        # expectations; source lines are intentionally not annotated as ruleid.
         for _, line in sorted(self.positive):
             self.assertIn(line, {ln for _, ln in self.hits})
 
