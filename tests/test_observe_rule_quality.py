@@ -230,12 +230,12 @@ def test_excluded_audit_events_do_not_pollute_global_rates(tmp_path):
     # Smoke audit emits a failed scan + rejected location; explicit exclude A2
     # must drop ALL its events before computing global metrics.
     logs = [
-        (30645, {'event': 'scanner_completed', 'audit_id': 'A1',
+        (30645, {'event': 'scanner_completed', 'audit_id': 'A1', 'session': 'A1',
                  'scanner': 'patterns', 'status': 'completed'}),
-        (30646, {'event': 'location_validated', 'issue_id': 'I1', 'audit_id': 'A1'}),
+        (30646, {'event': 'location_validated', 'issue_id': 'I1', 'audit_id': 'A1', 'session': 'A1'}),
         (30647, {'event': 'scanner_completed', 'audit_id': 'SMOKE',
-                 'scanner': 'semgrep', 'status': 'failed'}),
-        (30648, {'event': 'location_rejected', 'audit_id': 'SMOKE',
+                 'scanner': 'semgrep', 'status': 'failed', 'session': 'SMOKE'}),
+        (30648, {'event': 'location_rejected', 'audit_id': 'SMOKE', 'session': 'SMOKE',
                  'negative_sample': {'id': 'I-SMOKE'}}),
     ]
     jobs = [job('A1', [issue('I1')]), job('SMOKE', [issue('I-SMOKE')])]
@@ -299,9 +299,9 @@ def test_unattributed_events_excluded_from_clean_metrics(tmp_path):
     assert d['scanner_completed_events'] == 2 and d['scanner_failures'] == 1
     assert d['scanner_failure_rate_all'] == 0.5
     # Unattributed failed event is NOT in clean metrics.
-    assert d['scanner_completed_events_clean'] == 1 and d['scanner_failures_clean'] == 0
-    assert d['scanner_failure_rate_clean'] == 0.0
-    assert d['unattributed_event_count'] == 1
+    assert d['scanner_completed_events_clean'] == 0 and d['scanner_failures_clean'] == 0
+    assert d['scanner_failure_rate_clean'] == 'N/A'  # no attributable scanner events
+    assert d['unattributed_event_count'] == 2  # both scanner events lack session/issue
     assert 'ALL' in d['scanner_failure_data_source'] and 'CLEAN' in d['scanner_failure_data_source']
 
 
@@ -309,9 +309,9 @@ def test_markdown_cli_with_excluded_events_succeeds(tmp_path):
     import subprocess
     import sys
     logs = [
-        (30645, {'event': 'scanner_completed', 'audit_id': 'SMOKE',
+        (30645, {'event': 'scanner_completed', 'audit_id': 'SMOKE', 'session': 'SMOKE',
                  'scanner': 'semgrep', 'status': 'failed'}),
-        (30646, {'event': 'location_validated', 'issue_id': 'I1', 'audit_id': 'A1'}),
+        (30646, {'event': 'location_validated', 'issue_id': 'I1', 'audit_id': 'A1', 'session': 'A1'}),
     ]
     db = make_db(tmp_path, logs, [job('A1', [issue('I1')]), job('SMOKE', [issue('I-S')])])
     md = tmp_path / 'report.md'
@@ -347,7 +347,9 @@ def test_cross_audit_issue_hash_aggregates_fields_and_reviews(tmp_path):
     assert f['field_conflicts'].get('rule_id') == ['lg.ext.new', 'lg.ext.old']
     assert any(x['issue_id'] == iid for x in d['field_conflicts'])
     # Valid review from A2 is honored (not tied to arbitrary first occurrence).
-    assert d['reviewed_total'] == 1 and d['rules'][0]['human_confirmation_rate'] == 1.0
+    assert d['reviewed_total'] == 1
+    assert iid in d['conflicted_findings']  # conflicted -> not in any concrete rule
+    assert d['rules'] == []  # no non-conflicted findings in this fixture
 
 
 def test_conflicting_reviews_are_listed_not_silently_overwritten(tmp_path):
@@ -362,3 +364,106 @@ def test_conflicting_reviews_are_listed_not_silently_overwritten(tmp_path):
     assert len(d['review_conflicts']) == 1
     assert d['review_conflicts'][0]['issue_id'] == iid
     assert set(d['review_conflicts'][0]['decisions'].values()) == {'confirmed', 'false_positive'}
+
+
+def test_session_preferred_for_audit_resolution(tmp_path):
+    # Same issue in REAL and SMOKE; event session points to REAL exactly.
+    iid = 'ISSUE-SHARED'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid,
+                     'session': 'base:REAL', 'audit_id': None})]
+    jobs = [job('REAL', [issue(iid)]),
+            job('65dcb65d663c47ebb900d70a4f706e59', [issue(iid)])]
+    db = make_db(tmp_path, logs, jobs)
+    c = collect(db, 30644)
+    d = summarize(c)
+    assert not c['exclusions']  # session resolved to REAL, no exclusion
+    assert d['distinct_real_issue_ids'] == 1
+    assert c['findings'][iid]['audit_ids'] == ['REAL']
+
+
+def test_ambiguous_issue_audit_is_not_force_excluded(tmp_path):
+    iid = 'ISSUE-AMB'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid})]  # no session
+    jobs = [job('REAL', [issue(iid)]),
+            job('65dcb65d663c47ebb900d70a4f706e59', [issue(iid)])]
+    db = make_db(tmp_path, logs, jobs)
+    c = collect(db, 30644)
+    assert not c['exclusions']  # candidates {REAL, SMOKE}: ambiguous, not force-excluded
+    assert len(c['ambiguous_events']) == 1
+    assert set(c['ambiguous_events'][0]['candidate_audits']) == {
+        'REAL', '65dcb65d663c47ebb900d70a4f706e59'}
+    assert c['findings'][iid]['audit_ids'] == ['REAL']  # SMOKE not in occurrences
+
+
+def test_structured_value_beats_fallback(tmp_path):
+    iid = 'ISSUE-PRIO'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A',
+                     'session': 'A', 'rule_id': 'z.new', 'scanner': 'semgrep',
+                     'path': 'new.py', 'line': 9})]
+    # issue evidence/fallback says a.old / patterns / old.py / 1
+    db = make_db(tmp_path, logs, [job('A', [issue(iid, rule='a.old', path='old.py', line=1)])])
+    c = collect(db, 30644)
+    f = c['findings'][iid]
+    assert f['rule_id'] == 'z.new' and f['scanner'] == 'semgrep'
+    assert f['path'] == 'new.py' and f['line'] == 9
+    assert not f['field_conflicts']  # no conflict: structured wins cleanly
+
+
+def test_review_from_unrelated_audit_does_not_leak(tmp_path):
+    iid = 'ISSUE-LEAK'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid,
+                     'audit_id': 'REAL', 'session': 'REAL'})]
+    db = make_db(tmp_path, logs, [job('REAL', [issue(iid)])],
+                 [('UNRELATED', iid, 'confirmed')])  # UNRELATED audit has no such issue
+    d = summarize(collect(db, 30644))
+    assert d['reviewed_total'] == 0 and d['unreviewed_total'] == 1
+    assert d['rules'][0]['human_confirmation_rate'] == 'N/A'
+
+
+def test_conflicted_finding_excluded_from_rule_metrics(tmp_path):
+    iid = 'ISSUE-CONF'
+    logs = [
+        (30645, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A1',
+                 'session': 'A1', 'rule_id': 'r.one'}),
+        (30646, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A2',
+                 'session': 'A2', 'rule_id': 'r.two'}),
+    ]
+    db = make_db(tmp_path, logs, [job('A1', [issue(iid)]), job('A2', [issue(iid)])])
+    d = summarize(collect(db, 30644))
+    assert d['conflicted_finding_count'] == 1 and iid in d['conflicted_findings']
+    assert d['rules'] == []  # no concrete rule gets the conflicted finding
+    assert d['distinct_real_issue_ids'] == 1  # still a real finding overall
+
+
+def test_nonmetric_unattributed_noise_is_separated(tmp_path):
+    logs = [
+        (30645, {'event': 'tool_call', 'tool_name': 'view_file'}),
+        (30646, {'event': 'tool_evidence', 'genuine': True}),
+        (30647, {'event': 'model_explanations', 'count': 1}),
+        (30648, {'event': 'location_validated', 'issue_id': 'I1',
+                 'audit_id': 'A', 'session': 'A'}),
+    ]
+    db = make_db(tmp_path, logs, [job('A', [issue('I1')])])
+    d = summarize(collect(db, 30644))
+    assert d['nonmetric_unattributed_count'] == 3
+    assert d['unattributed_event_count'] == 0  # only metric-relevant events listed
+    assert d['location_validated_events_clean'] == 1
+
+
+def test_full_history_diagnostic_has_no_tool_noise(tmp_path):
+    # A full-history style fixture: many tool events, few metric events with
+    # resolvable sessions; clean denominator must keep the session-resolved ones.
+    logs = []
+    lid = 30645
+    for _ in range(20):
+        logs.append((lid, {'event': 'tool_call'})); lid += 1
+        logs.append((lid, {'event': 'tool_evidence'})); lid += 1
+    for i in range(5):
+        logs.append((lid, {'event': 'location_validated', 'issue_id': f'I{i}',
+                           'session': 'A', 'audit_id': 'A'})); lid += 1
+    jobs = [job('A', [issue(f'I{i}') for i in range(5)])]
+    db = make_db(tmp_path, logs, jobs)
+    d = summarize(collect(db, 30644))
+    assert d['nonmetric_unattributed_count'] == 40
+    assert d['unattributed_event_count'] == 0
+    assert d['location_validated_events_clean'] == 5  # not dropped by tool noise
