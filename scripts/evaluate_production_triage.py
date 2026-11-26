@@ -174,7 +174,10 @@ def _server_process(endpoint: str) -> dict:
     """Best-effort OBSERVED server info (PID + command line), not a constant."""
     info = {'observed': False, 'pid': None, 'command_line': None, 'note': None}
     try:
-        port = int(str(endpoint).rstrip('/').rsplit(':', 1)[-1])
+        from urllib.parse import urlsplit
+        port = urlsplit(endpoint).port
+        if port is None:
+            raise ValueError(f'no port in endpoint: {endpoint}')
         out = subprocess.check_output(
             ['powershell', '-NoProfile', '-Command',
              f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue "

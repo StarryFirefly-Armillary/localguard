@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from evaluate_production_triage import (
     _metrics, _field_completeness, _field_completeness_from_presence, _is_placeholder,
-    OUTPUT_FIELDS, PLACEHOLDER_EXPLANATION, PLACEHOLDER_REMEDIATION)
+    _server_process, OUTPUT_FIELDS, PLACEHOLDER_EXPLANATION, PLACEHOLDER_REMEDIATION)
 
 
 def _row(label, verdict, **fields):
@@ -95,3 +95,38 @@ def test_presence_based_recompute_for_presence_only_artifacts():
                      'confidence': 2, 'reason': 1, 'all_fields': 1}
     # both functions agree when an item has both values and presence flags
     assert stats == _field_completeness([full, partial])
+
+
+def test_server_process_parses_port_from_endpoint_with_url_path(monkeypatch):
+    # Regression: endpoint 'http://127.0.0.1:17865/v1' used to be parsed by
+    # int(endpoint.rsplit(':', 1)[-1]) -> '17865/v1' -> ValueError, so the
+    # observed PID/command line was never captured.
+    calls = []
+
+    def fake_check_output(cmd, **kwargs):
+        calls.append(cmd)
+        return '12345\n' if 'Get-NetTCPConnection' in ' '.join(cmd) else 'llama-server.exe --model x'
+
+    monkeypatch.setattr('evaluate_production_triage.subprocess.check_output',
+                        fake_check_output)
+    info = _server_process('http://127.0.0.1:17865/v1')
+    assert info['observed'] is True and info['pid'] == 12345
+    assert '17865' in ' '.join(calls[0])
+    assert 'invalid literal' not in str(info.get('note'))
+
+
+def test_server_process_endpoint_without_path_and_missing_port(monkeypatch):
+    calls = []
+
+    def fake_check_output(cmd, **kwargs):
+        calls.append(cmd)
+        return '777\n'
+
+    monkeypatch.setattr('evaluate_production_triage.subprocess.check_output',
+                        fake_check_output)
+    ok = _server_process('http://127.0.0.1:9999')
+    assert ok['pid'] == 777 and '9999' in ' '.join(calls[0])
+    calls.clear()
+    missing = _server_process('http://127.0.0.1')
+    assert missing['observed'] is False and not calls
+    assert 'no port' in str(missing['note'])
