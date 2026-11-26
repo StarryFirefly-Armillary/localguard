@@ -135,15 +135,32 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
         if job['target'] and job['target'] in set(exclude_targets):
             excluded_audits.add(job['audit_id'])
 
-    # session -> audit_id: exact mapping from completed jobs. Real log sessions
-    # look like 'base_session:audit_id'; also index the raw session value.
+    # session -> audit_id mapping. 'base:audit_id' maps exactly to audit_id.
+    # A raw base session maps to the UNION of all audit_ids of jobs sharing it
+    # (never overwritten). Raw session strings are NEVER candidate audit_ids.
     session_to_audits = {}
+    base_to_audits = defaultdict(set)
     for job in jobs.values():
-        aids = {job['audit_id'], job['session'].split(':')[-1] if job['session'] else None}
-        aids.discard(None)
-        session_to_audits[job['session']] = aids
-        for aid in aids:
-            session_to_audits.setdefault(aid, set()).add(aid)
+        aid = job['audit_id']
+        session = job.get('session') or ''
+        base = session.split(':')[0] if session else ''
+        if base:
+            base_to_audits[base].add(aid)
+        # 'base:audit_id' exact form: map the full session string to just aid.
+        if ':' in session:
+            session_to_audits[session] = {aid}
+    # Any job's audit_id is itself a valid exact key: event sessions of the
+    # form 'base:audit_id' resolve via their suffix, even when job.session
+    # stores only the base part.
+    for job in jobs.values():
+        session_to_audits.setdefault(job['audit_id'], {job['audit_id']})
+    # Raw base session only usable if EXACTLY ONE completed job uses it.
+    for base, aids in base_to_audits.items():
+        if len(aids) == 1:
+            session_to_audits[base] = set(aids)
+        else:
+            # Keep the multi-audit set for ambiguity detection, not as audit_id.
+            session_to_audits[base] = set(aids)
 
     issue_occurrences = defaultdict(list)
     all_issue_audits = defaultdict(set)
@@ -160,6 +177,7 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     nonmetric_unattributed_count = 0
     exclusions = []
     ambiguous_events = []
+    nonmetric_ambiguous_count = 0
     for lid, event in raw_events:
         event_name = event.get('event')
         # 1) EXPLICIT audit_id always wins (highest priority).
@@ -169,15 +187,22 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
         session = event.get('session')
         if not aid and session:
             candidates = session_to_audits.get(session) or set()
-            if not candidates and ':' in session:
-                candidates = session_to_audits.get(session.split(':')[-1]) or set()
+            if ':' in session:
+                suffix = session.split(':')[-1]
+                suffix_candidates = session_to_audits.get(suffix) or set()
+                if suffix_candidates:
+                    candidates = suffix_candidates  # exact audit_id wins
             if len(candidates) == 1:
                 aid = next(iter(candidates)); resolved_by = 'session'
             elif len(candidates) > 1:
-                ambiguous_events.append({'log_id': lid, 'event': event_name,
-                                         'candidate_audits': sorted(candidates),
-                                         'resolved_by': 'session',
-                                         'note': 'multiple session candidates; unresolved'})
+                record = {'log_id': lid, 'event': event_name,
+                          'candidate_audits': sorted(candidates),
+                          'resolved_by': 'session',
+                          'note': 'multiple session candidates; unresolved'}
+                if event_name in METRIC_EVENTS:
+                    ambiguous_events.append(record)
+                else:
+                    nonmetric_ambiguous_count += 1
         # 3) issue reverse-lookup only when still unresolved.
         if not aid:
             candidates = set()
@@ -187,11 +212,15 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
                 aid = next(iter(candidates)); resolved_by = 'issue'
             elif len(candidates) > 1:
                 excluded_here = candidates & excluded_audits
-                ambiguous_events.append({'log_id': lid, 'event': event_name,
-                                         'candidate_audits': sorted(candidates),
-                                         'excluded_candidates': sorted(excluded_here),
-                                         'resolved_by': 'issue',
-                                         'note': 'multiple audit candidates; kept unclean, never force-excluded'})
+                record = {'log_id': lid, 'event': event_name,
+                          'candidate_audits': sorted(candidates),
+                          'excluded_candidates': sorted(excluded_here),
+                          'resolved_by': 'issue',
+                          'note': 'multiple audit candidates; kept unclean, never force-excluded'}
+                if event_name in METRIC_EVENTS:
+                    ambiguous_events.append(record)
+                else:
+                    nonmetric_ambiguous_count += 1
         if aid and aid in excluded_audits:
             exclusions.append({'log_id': lid, 'event': event_name, 'audit_id': aid,
                                'reason': 'excluded_audit_event',
@@ -276,6 +305,7 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     return {'findings': findings, 'log_events': log_events,
             'unattributed_events': unattributed_events,
             'nonmetric_unattributed_count': nonmetric_unattributed_count,
+            'nonmetric_ambiguous_count': nonmetric_ambiguous_count,
             'ambiguous_events': ambiguous_events,
             'orphan_issue_ids': orphan_issue_ids,
             'reviews': reviews, 'decisions': decisions,
@@ -406,6 +436,8 @@ def summarize(collected: dict) -> dict:
         'unattributed_event_count': len(collected['unattributed_events']),
         'nonmetric_unattributed_count': collected['nonmetric_unattributed_count'],
         'nonmetric_unattributed_note': 'tool_call/tool_evidence/model_explanations etc. without audit_id; never enter cleaned metrics',
+        'nonmetric_ambiguous_count': collected['nonmetric_ambiguous_count'],
+        'nonmetric_ambiguous_note': 'non-metric events with ambiguous audit candidates; not in ambiguous_events or cleaned metrics',
         'ambiguous_events': collected['ambiguous_events'],
         'ambiguous_event_count': len(collected['ambiguous_events']),
         'unattributed_note': 'events with no resolvable audit_id; listed and EXCLUDED from all CLEAN metrics (ALL metrics still include them)',

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts.observe_rule_quality import (
-    DEFAULT_DB, ROOT, collect, connect_ro, summarize)
+    DEFAULT_DB, METRIC_EVENTS, ROOT, collect, connect_ro, summarize)
 
 
 def make_db(tmp_path: Path, logs: list[tuple], jobs: list[tuple], reviews=()) -> Path:
@@ -527,3 +527,78 @@ def test_full_history_explicit_scanner_audit_ids_are_clean(tmp_path):
     assert d['scanner_completed_events_clean'] == 75
     assert d['unattributed_event_count'] == 0
     assert d['scanner_failure_rate_clean'] == 0.0
+
+
+def test_raw_session_single_job_resolves_uniquely(tmp_path):
+    # Single completed job with a colonless raw session: exact match, unique.
+    logs = [(30645, {'event': 'location_validated', 'issue_id': 'I1', 'session': 'BASE'})]
+    db = make_db(tmp_path, logs, [job('A1', [issue('I1')])])
+    # job() creates session 's'; override the stored session to 'BASE'.
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='BASE' WHERE id='A1'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    assert c['unattributed_events'] == []
+    assert c['findings']['I1']['audit_ids'] == ['A1']
+
+
+def test_shared_base_session_union_not_overwritten(tmp_path):
+    # Two jobs share base session 'BASE' with different audit ids: union, not
+    # overwrite; an event carrying BASE alone is ambiguous.
+    logs = [(30645, {'event': 'location_validated', 'issue_id': 'I1', 'session': 'BASE'})]
+    db = make_db(tmp_path, logs, [job('A1', [issue('I1')]), job('A2', [issue('I2')])])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='BASE:A1' WHERE id='A1'")
+    con.execute("UPDATE jobs SET session='BASE:A2' WHERE id='A2'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    amb = [e for e in c['ambiguous_events'] if e.get('resolved_by') == 'session']
+    assert amb and set(amb[0]['candidate_audits']) == {'A1', 'A2'}
+
+
+def test_base_colon_audit_session_exact_hit(tmp_path):
+    iid = 'I-EXACT'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid, 'session': 'BASE:A1'})]
+    db = make_db(tmp_path, logs, [job('A1', [issue(iid)]), job('A2', [issue('I2')])])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='BASE:A1' WHERE id='A1'")
+    con.execute("UPDATE jobs SET session='BASE:A2' WHERE id='A2'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    assert not c['ambiguous_events'] and not c['unattributed_events']
+    assert c['findings'][iid]['audit_ids'] == ['A1']
+
+
+def test_nonmetric_ambiguity_separate_from_ambiguous_events(tmp_path):
+    db = make_db(tmp_path,
+                 [(30645, {'event': 'tool_call', 'session': 'BASE'}),
+                  (30646, {'event': 'location_validated', 'issue_id': 'I1', 'session': 'BASE'})],
+                 [job('A1', [issue('I1')]), job('A2', [issue('I2')])])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='BASE:A1' WHERE id='A1'")
+    con.execute("UPDATE jobs SET session='BASE:A2' WHERE id='A2'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    d = summarize(c)
+    assert c['nonmetric_ambiguous_count'] == 1
+    assert all(e['event'] in METRIC_EVENTS for e in c['ambiguous_events'])
+    assert d['nonmetric_ambiguous_count'] == 1
+
+
+def test_candidate_audits_never_contain_raw_session(tmp_path):
+    db = make_db(tmp_path,
+                 [(30645, {'event': 'location_validated', 'issue_id': 'I1', 'session': 'BASE'})],
+                 [job('A1', [issue('I1')]), job('A2', [issue('I2')])])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='BASE:A1' WHERE id='A1'")
+    con.execute("UPDATE jobs SET session='BASE:A2' WHERE id='A2'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    for e in c['ambiguous_events']:
+        assert 'BASE' not in e['candidate_audits']
+        assert all(':' not in a for a in e['candidate_audits'])
