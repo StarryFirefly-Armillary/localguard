@@ -118,10 +118,11 @@ def test_unattributed_rejection_and_no_scanner_events_are_na(tmp_path):
     ]
     db = make_db(tmp_path, logs, [job('A', [issue('ISSUE-1')])])
     d = summarize(collect(db, 30644))
-    # Unattributed rejection is NOT in resolved-only event metrics.
-    assert d['location_error_events'] == 0
+    # ALL includes the unattributed rejection; CLEAN excludes it (resolved only).
+    assert d['location_error_events'] == 1
+    assert d['location_error_events_clean'] == 0
     assert d['location_validated_events'] == 1
-    assert d['location_error_event_rate_all'] == 0.0
+    assert d['location_error_event_rate_all'] == 0.5
     assert d['unattributed_event_count'] == 1
     assert d['scanner_completed_events'] == 0
     assert d['scanner_failures'] == 0 and d['scanner_failure_rate'] == 'N/A'
@@ -300,8 +301,9 @@ def test_unattributed_events_excluded_from_clean_metrics(tmp_path):
     ]
     db = make_db(tmp_path, logs, [job('A1', [issue('I1')])])
     d = summarize(collect(db, 30644))
-    assert d['scanner_completed_events'] == 1 and d['scanner_failures'] == 0
-    assert d['scanner_failure_rate_all'] == 0.0
+    # ALL includes the unattributed failed scanner; CLEAN excludes it.
+    assert d['scanner_completed_events'] == 2 and d['scanner_failures'] == 1
+    assert d['scanner_failure_rate_all'] == 0.5
     # Unattributed failed event is NOT in clean metrics.
     # Explicit audit_id event is clean; pointer-less event is unattributed.
     assert d['scanner_completed_events_clean'] == 1 and d['scanner_failures_clean'] == 0
@@ -514,8 +516,9 @@ def test_two_nonexcluded_audits_same_issue_are_ambiguous(tmp_path):
     assert set(c['ambiguous_events'][0]['candidate_audits']) == {'A1', 'A2'}
     assert not c['exclusions']  # neither audit excluded
     d = summarize(c)
-    # Ambiguous metric event is kept unclean -> clean denominator excludes it.
-    assert d['location_validated_events'] == 0  # ambiguous event not resolved
+    # ALL includes the ambiguous event; CLEAN excludes it (not resolved).
+    assert d['location_validated_events'] == 1
+    assert d['location_validated_events_clean'] == 0
     assert d['ambiguous_event_count'] == 1
 
 
@@ -692,3 +695,52 @@ def test_shared_base_session_with_smoke_cannot_force_real(tmp_path):
     assert iid not in c['findings']
     assert iid in d['ambiguous_issue_ids']
     assert d['distinct_real_issue_ids'] == 0
+
+
+def test_finding_uses_only_resolved_audit_fields_and_count(tmp_path):
+    # A1 resolved with rule.a1; A2 has same issue_id but UNRESOLVED (no event
+    # resolves to A2) with rule.a2. Finding must keep A1 fields, count=1.
+    iid = 'I-ISO'
+    a1 = issue(iid, rule='rule.a1', path='a1.py', line=1)
+    a2 = issue(iid, rule='rule.a2', path='a2.py', line=2)
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid,
+                     'audit_id': 'A1', 'rule_id': 'rule.a1'})]
+    db = make_db(tmp_path, logs, [job('A1', [a1]), job('A2', [a2])])
+    c = collect(db, 30644)
+    f = c['findings'][iid]
+    assert f['audit_ids'] == ['A1']
+    assert f['occurrence_count'] == 1  # only resolved occurrence
+    assert f['rule_id'] == 'rule.a1' and f['path'] == 'a1.py' and f['line'] == 1
+    assert 'rule.a2' not in str(f) and 'a2.py' not in str(f)  # A2 never referenced
+    assert not f['field_conflicts']
+
+
+def test_from_structured_log_needs_business_field_not_just_issue_id(tmp_path):
+    iid = 'I-IDONLY'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid, 'audit_id': 'A1'})]
+    db = make_db(tmp_path, logs, [job('A1', [issue(iid)])])
+    f = collect(db, 30644)['findings'][iid]
+    # Only issue_id present in structured log -> must NOT claim structured origin.
+    assert f['from_structured_log'] is False
+    # Fallback from issue evidence still provides real identity.
+    assert f['rule_id'] == 'patterns.reverse-shell'
+
+
+def test_all_metric_includes_unattributed_scanner_failure_clean_excludes(tmp_path):
+    # One unattributed scanner failure + one resolved success.
+    logs = [
+        (30645, {'event': 'scanner_completed', 'scanner': 'gitleaks', 'status': 'failed'}),
+        (30646, {'event': 'scanner_completed', 'audit_id': 'A1',
+                 'scanner': 'patterns', 'status': 'completed'}),
+    ]
+    db = make_db(tmp_path, logs, [job('A1', [issue('I1')])])
+    c = collect(db, 30644)
+    d = summarize(c)
+    # ALL: both scanner events (including the unattributed failure).
+    assert d['scanner_completed_events'] == 2 and d['scanner_failures'] == 1
+    assert d['scanner_failure_rate_all'] == 0.5
+    # CLEAN: only resolved success.
+    assert d['scanner_completed_events_clean'] == 1 and d['scanner_failures_clean'] == 0
+    assert d['scanner_failure_rate_clean'] == 0.0
+    assert 'INCLUDED in ALL' in d['unattributed_note']
+    assert 'except excluded' in d['scanner_failure_data_source']

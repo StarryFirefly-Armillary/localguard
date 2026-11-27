@@ -187,9 +187,12 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     nonmetric_unattributed_count = 0
     nonmetric_ambiguous_count = 0
     exclusions = []
+    all_metric_events = []  # ALL set: every metric-type event except excluded
     for lid, event in raw_events:
         event_name = event.get('event')
         metric = event_name in METRIC_EVENTS
+        if metric:
+            all_metric_events.append((lid, event))
         issue_ids = _event_issue_ids(event)
 
         # Priority 1: explicit audit_id.
@@ -236,6 +239,8 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
                                'reason': 'excluded_audit_event',
                                'resolved_by': resolved_by,
                                'issue_id': next(iter(issue_ids), None)})
+            if metric:
+                all_metric_events = [x for x in all_metric_events if x[0] != lid]
             continue  # state = excluded
         if aid:
             resolved_events.append((lid, event, aid))  # state = resolved
@@ -278,7 +283,8 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
         # audit_ids come ONLY from resolved events that reference this issue.
         resolved_audit_ids = {aid for _, ev, aid in resolved_events
                               if iid in _event_issue_ids(ev)}
-        occurrence_audits = resolved_audit_ids | {j['audit_id'] for _, j in occs}
+        # ONLY resolved audits may contribute fields/fallbacks/counts.
+        occurrence_audits = set(resolved_audit_ids)
         structured_all = _fields_from_logs(iid, resolved_events, occurrence_audits)
         merged = {}
         conflicts = {}
@@ -291,7 +297,9 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
                     conflicts[k] = ordered
                 continue
             fallbacks = set()
-            for issue, _ in occs:
+            for issue, job in occs:
+                if job['audit_id'] not in resolved_audit_ids:
+                    continue  # never inherit from unresolved/unattributed audits
                 loc = (issue.get('locations') or [{}])[0] if issue.get('locations') else {}
                 ev = issue.get('evidence') or []
                 fb = {'rule_id': rule_from_evidence(ev),
@@ -307,8 +315,10 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
                     conflicts[k] = ordered
         finding = {'issue_id': iid, **merged,
                    'audit_ids': sorted(resolved_audit_ids),
-                   'occurrence_count': len(occs),
-                   'from_structured_log': any(structured_all['values'].values()),
+                   'occurrence_count': len(resolved_audit_ids),
+                   'from_structured_log': any(
+                       structured_all['values'].get(k) for k in
+                       ('rule_id', 'scanner', 'path', 'line', 'engine')),
                    'structured_log_fields': structured_all['values'],
                    'field_conflicts': conflicts}
         findings[iid] = finding
@@ -335,6 +345,7 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
             decisions[iid] = distinct[0]
 
     return {'findings': findings, 'log_events': log_events,
+            'all_metric_events': all_metric_events,
             'unattributed_events': unattributed_events,
             'nonmetric_unattributed_count': nonmetric_unattributed_count,
             'nonmetric_ambiguous_count': nonmetric_ambiguous_count,
@@ -366,13 +377,17 @@ def summarize(collected: dict) -> dict:
     # Location errors are an EVENT-LEVEL metric: current engine often logs
     # location_rejected with only negative_sample and no issue_id, so per-issue
     # attribution is not reliable. Count unattributable rejections separately.
+    # ALL = every metric-type event (including unattributed/ambiguous),
+    # CLEAN = resolved events only (excludes unattributed/ambiguous/excluded).
+    all_metric_events = collected['all_metric_events']
+    resolved_ids = {lid for lid, _, _ in log_events}
     location_validated = 0
     location_rejected = 0
     location_rejected_unattributed = 0
     clean_validated = 0
     clean_rejected = 0
-    for lid, event, _aid in log_events:
-        clean = True  # log_events holds ONLY resolved events
+    for lid, event in all_metric_events:
+        clean = lid in resolved_ids
         if event.get('event') == 'location_validated':
             location_validated += 1
             clean_validated += clean
@@ -391,8 +406,8 @@ def summarize(collected: dict) -> dict:
     clean_scanner_failures = 0
     clean_scanner_events = 0
     other_pipeline_failures = Counter()
-    for lid, event, _aid in log_events:
-        clean = True  # log_events holds ONLY resolved events
+    for lid, event in all_metric_events:
+        clean = lid in resolved_ids
         if event.get('event') == 'scanner_completed':
             scanner_events += 1
             clean_scanner_events += clean
@@ -477,7 +492,7 @@ def summarize(collected: dict) -> dict:
         'event_state_note': 'exclusive states: resolved/ambiguous/unattributed/excluded; log_id appears in exactly one; only resolved events generate findings',
         'ambiguous_issue_ids': sorted(collected['ambiguous_issue_ids']),
         'ambiguous_issue_count': len(collected['ambiguous_issue_ids']),
-        'unattributed_note': 'events with no resolvable audit_id; listed and EXCLUDED from all CLEAN metrics (ALL metrics still include them)',
+        'unattributed_note': 'events with no candidate audit; EXCLUDED from CLEAN but INCLUDED in ALL (ALL=all metric-type events except excluded; CLEAN=resolved only)',
         'field_conflicts': collected['field_conflicts'],
         'conflicted_findings': sorted(conflicted_ids),
         'conflicted_finding_count': len(conflicted_ids),
@@ -494,7 +509,7 @@ def summarize(collected: dict) -> dict:
         'scanner_failures_clean': clean_scanner_failures,
         'scanner_failure_rate_clean': _rate(clean_scanner_failures, clean_scanner_events),
         'scanner_failure_rate': _rate(clean_scanner_failures, clean_scanner_events),
-        'scanner_failure_data_source': 'logs scanner_completed only; ALL=all events incl. unattributed, CLEAN=excludes unattributed events; numerator=status != completed; N/A if denominator=0',
+        'scanner_failure_data_source': 'logs scanner_completed; ALL=all metric events incl. unattributed/ambiguous (except excluded), CLEAN=resolved only; numerator=status != completed; N/A if denominator=0',
         'other_pipeline_failures': dict(other_pipeline_failures),
         'other_pipeline_failures_note': 'model_triage_failed/audit_failed are NOT scanner failures; excluded from scanner metrics',
         'location_error_events': location_rejected,
