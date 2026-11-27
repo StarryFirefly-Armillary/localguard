@@ -81,6 +81,12 @@ def _fields_from_logs(iid: str, log_events: list, allowed_audit_ids: set) -> dic
     for _, event, resolved_aid in log_events:
         if resolved_aid not in allowed_audit_ids:
             continue
+        # A raw explicit audit_id from a different (e.g. failed/unknown) audit
+        # must not contribute structured fields even if issue-lookup resolved
+        # the event to a known audit.
+        explicit = event.get('audit_id')
+        if explicit and explicit not in allowed_audit_ids:
+            continue
         candidates = [event] + [v for v in (event.get('verdicts') or []) if isinstance(v, dict)]
         for c in candidates:
             if c.get('issue_id') != iid:
@@ -130,6 +136,7 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     finally:
         con.close()
 
+    known_audits = {j['audit_id'] for j in jobs.values()}
     excluded_audits = set(KNOWN_SMOKE_AUDIT_IDS) | set(exclude_audit_ids)
     for job in jobs.values():
         if job['target'] and job['target'] in set(exclude_targets):
@@ -172,72 +179,95 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
             if job['audit_id'] not in excluded_audits:
                 issue_occurrences[issue['id']].append((issue, job))
 
-    log_events = []
+    # EXCLUSIVE event states: excluded / resolved / ambiguous / unattributed.
+    # Each log_id lands in exactly one bucket; no double counting.
+    resolved_events = []          # (log_id, event, resolved_audit_id)
     unattributed_events = []
-    nonmetric_unattributed_count = 0
-    exclusions = []
     ambiguous_events = []
+    nonmetric_unattributed_count = 0
     nonmetric_ambiguous_count = 0
+    exclusions = []
     for lid, event in raw_events:
         event_name = event.get('event')
-        # 1) EXPLICIT audit_id always wins (highest priority).
+        metric = event_name in METRIC_EVENTS
+        issue_ids = _event_issue_ids(event)
+
+        # Priority 1: explicit audit_id.
         aid = event.get('audit_id')
+        if aid and aid not in known_audits:
+            aid = None  # unknown audit cannot be resolved from a failed/unknown job
         resolved_by = 'explicit' if aid else None
-        # 2) session resolution only when audit_id absent.
+        session_candidates = set()
+        issue_candidates = set()
+
+        # Priority 2: exact session. Multi-candidate here is NOT final — issue
+        # reverse-lookup may disambiguate in step 3.
         session = event.get('session')
         if not aid and session:
-            candidates = session_to_audits.get(session) or set()
+            session_candidates = set(session_to_audits.get(session) or set())
             if ':' in session:
                 suffix = session.split(':')[-1]
-                suffix_candidates = session_to_audits.get(suffix) or set()
-                if suffix_candidates:
-                    candidates = suffix_candidates  # exact audit_id wins
-            if len(candidates) == 1:
-                aid = next(iter(candidates)); resolved_by = 'session'
-            elif len(candidates) > 1:
-                record = {'log_id': lid, 'event': event_name,
-                          'candidate_audits': sorted(candidates),
-                          'resolved_by': 'session',
-                          'note': 'multiple session candidates; unresolved'}
-                if event_name in METRIC_EVENTS:
-                    ambiguous_events.append(record)
-                else:
-                    nonmetric_ambiguous_count += 1
-        # 3) issue reverse-lookup only when still unresolved.
+                exact = session_to_audits.get(suffix) or set()
+                if exact:
+                    session_candidates = exact
+            if len(session_candidates) == 1:
+                aid = next(iter(session_candidates)); resolved_by = 'session'
+
+        # Priority 3: issue reverse-lookup. If session was ambiguous, a unique
+        # issue candidate WINS and the event is resolved (not ambiguous).
+        final_candidates = set()
         if not aid:
-            candidates = set()
-            for iid in _event_issue_ids(event):
-                candidates |= all_issue_audits.get(iid, set())
-            if len(candidates) == 1:
-                aid = next(iter(candidates)); resolved_by = 'issue'
-            elif len(candidates) > 1:
-                excluded_here = candidates & excluded_audits
-                record = {'log_id': lid, 'event': event_name,
-                          'candidate_audits': sorted(candidates),
-                          'excluded_candidates': sorted(excluded_here),
-                          'resolved_by': 'issue',
-                          'note': 'multiple audit candidates; kept unclean, never force-excluded'}
-                if event_name in METRIC_EVENTS:
-                    ambiguous_events.append(record)
-                else:
-                    nonmetric_ambiguous_count += 1
+            for iid in issue_ids:
+                issue_candidates |= all_issue_audits.get(iid, set())
+            if len(session_candidates) == 1:
+                final_candidates = session_candidates
+            elif session_candidates and issue_candidates:
+                # Intersection narrows candidates; union only when no overlap.
+                final_candidates = (session_candidates & issue_candidates) or (session_candidates | issue_candidates)
+            elif session_candidates:
+                final_candidates = session_candidates
+            else:
+                final_candidates = issue_candidates
+            if len(final_candidates) == 1:
+                aid = next(iter(final_candidates)); resolved_by = resolved_by or 'issue'
+
         if aid and aid in excluded_audits:
             exclusions.append({'log_id': lid, 'event': event_name, 'audit_id': aid,
                                'reason': 'excluded_audit_event',
                                'resolved_by': resolved_by,
-                               'issue_id': next((i for i in _event_issue_ids(event)), None)})
+                               'issue_id': next(iter(issue_ids), None)})
+            continue  # state = excluded
+        if aid:
+            resolved_events.append((lid, event, aid))  # state = resolved
             continue
-        if not aid and event_name in METRIC_EVENTS:
+        if len(final_candidates) > 1:
+            # state = ambiguous (metric events only; no unattributed entry).
+            record = {'log_id': lid, 'event': event_name, 'issue_ids': issue_ids,
+                      'candidate_audits': sorted(final_candidates),
+                      'excluded_candidates': sorted(final_candidates & excluded_audits),
+                      'resolved_by': resolved_by or 'multi_candidate',
+                      'note': 'multiple audit candidates; no unique resolution'}
+            if metric:
+                ambiguous_events.append(record)
+            else:
+                nonmetric_ambiguous_count += 1
+            continue
+        # state = unattributed (no candidates at all).
+        if metric:
             unattributed_events.append({'log_id': lid, 'event': event_name,
-                                        'issue_ids': _event_issue_ids(event),
-                                        'reason': 'no_session_or_issue_audit_match'})
-        elif not aid:
-            nonmetric_unattributed_count += 1  # tool_call/tool_evidence/model_explanations...
-        log_events.append((lid, event, aid))  # (log_id, event, resolved_audit_id)
+                                        'issue_ids': issue_ids,
+                                        'reason': 'no_candidate_audit'})
+        else:
+            nonmetric_unattributed_count += 1
+
+    log_events = resolved_events  # only resolved events can found findings
+    ambiguous_issue_ids = set()
+    for e in ambiguous_events:
+        ambiguous_issue_ids.update(e.get('issue_ids') or [])
 
     seen_ids = set()
     orphan_issue_ids = set()
-    for _, event, _aid in log_events:
+    for _, event, _aid in resolved_events:
         for iid in _event_issue_ids(event):
             (seen_ids if iid in issue_occurrences else orphan_issue_ids).add(iid)
 
@@ -245,12 +275,14 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
     field_conflicts = []
     for iid in sorted(seen_ids):
         occs = issue_occurrences[iid]
-        occurrence_audits = {j['audit_id'] for _, j in occs}
-        structured_all = _fields_from_logs(iid, log_events, occurrence_audits)
+        # audit_ids come ONLY from resolved events that reference this issue.
+        resolved_audit_ids = {aid for _, ev, aid in resolved_events
+                              if iid in _event_issue_ids(ev)}
+        occurrence_audits = resolved_audit_ids | {j['audit_id'] for _, j in occs}
+        structured_all = _fields_from_logs(iid, resolved_events, occurrence_audits)
         merged = {}
         conflicts = {}
         for k in ('rule_id', 'scanner', 'path', 'line'):
-            # STRUCTURED LOG WINS. Only use fallback when NO structured value.
             structured_values = {v for v in structured_all['values'].get(k, []) if v is not None}
             if structured_values:
                 ordered = sorted(structured_values, key=str)
@@ -274,7 +306,7 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
                 if len(ordered) > 1:
                     conflicts[k] = ordered
         finding = {'issue_id': iid, **merged,
-                   'audit_ids': sorted({j['audit_id'] for _, j in occs}),
+                   'audit_ids': sorted(resolved_audit_ids),
                    'occurrence_count': len(occs),
                    'from_structured_log': any(structured_all['values'].values()),
                    'structured_log_fields': structured_all['values'],
@@ -307,6 +339,8 @@ def collect(db: Path, since_log_id: int = DEFAULT_SINCE,
             'nonmetric_unattributed_count': nonmetric_unattributed_count,
             'nonmetric_ambiguous_count': nonmetric_ambiguous_count,
             'ambiguous_events': ambiguous_events,
+            'ambiguous_issue_ids': ambiguous_issue_ids,
+            'resolved_event_count': len(resolved_events),
             'orphan_issue_ids': orphan_issue_ids,
             'reviews': reviews, 'decisions': decisions,
             'review_conflicts': review_conflicts, 'field_conflicts': field_conflicts,
@@ -332,15 +366,13 @@ def summarize(collected: dict) -> dict:
     # Location errors are an EVENT-LEVEL metric: current engine often logs
     # location_rejected with only negative_sample and no issue_id, so per-issue
     # attribution is not reliable. Count unattributable rejections separately.
-    unattributed_ids = {x['log_id'] for x in collected['unattributed_events']}
     location_validated = 0
     location_rejected = 0
     location_rejected_unattributed = 0
     clean_validated = 0
     clean_rejected = 0
-    unclean_ids = unattributed_ids | {x['log_id'] for x in collected['ambiguous_events']}
     for lid, event, _aid in log_events:
-        clean = lid not in unclean_ids
+        clean = True  # log_events holds ONLY resolved events
         if event.get('event') == 'location_validated':
             location_validated += 1
             clean_validated += clean
@@ -360,7 +392,7 @@ def summarize(collected: dict) -> dict:
     clean_scanner_events = 0
     other_pipeline_failures = Counter()
     for lid, event, _aid in log_events:
-        clean = lid not in unclean_ids
+        clean = True  # log_events holds ONLY resolved events
         if event.get('event') == 'scanner_completed':
             scanner_events += 1
             clean_scanner_events += clean
@@ -433,13 +465,18 @@ def summarize(collected: dict) -> dict:
         'orphan_count': len(collected['orphan_issue_ids']),
         'orphan_note': 'log issue_ids with no completed-job issue; excluded from distinct finding count and 50-item threshold',
         'unattributed_events': collected['unattributed_events'],
-        'unattributed_event_count': len(collected['unattributed_events']),
         'nonmetric_unattributed_count': collected['nonmetric_unattributed_count'],
         'nonmetric_unattributed_note': 'tool_call/tool_evidence/model_explanations etc. without audit_id; never enter cleaned metrics',
         'nonmetric_ambiguous_count': collected['nonmetric_ambiguous_count'],
         'nonmetric_ambiguous_note': 'non-metric events with ambiguous audit candidates; not in ambiguous_events or cleaned metrics',
         'ambiguous_events': collected['ambiguous_events'],
         'ambiguous_event_count': len(collected['ambiguous_events']),
+        'resolved_event_count': collected['resolved_event_count'],
+        'unattributed_event_count': len(collected['unattributed_events']),
+        'excluded_event_count': len([x for x in collected['exclusions'] if x.get('reason') == 'excluded_audit_event']),
+        'event_state_note': 'exclusive states: resolved/ambiguous/unattributed/excluded; log_id appears in exactly one; only resolved events generate findings',
+        'ambiguous_issue_ids': sorted(collected['ambiguous_issue_ids']),
+        'ambiguous_issue_count': len(collected['ambiguous_issue_ids']),
         'unattributed_note': 'events with no resolvable audit_id; listed and EXCLUDED from all CLEAN metrics (ALL metrics still include them)',
         'field_conflicts': collected['field_conflicts'],
         'conflicted_findings': sorted(conflicted_ids),
@@ -502,7 +539,8 @@ def main():
                  f"- 排除样本: {data['exclusion_count']}",
                  f"- 扫描失败(全量): {data['scanner_failures']}/{data['scanner_completed_events']} 率 {data['scanner_failure_rate_all']}；(已清洗): {data['scanner_failures_clean']}/{data['scanner_completed_events_clean']} 率 {data['scanner_failure_rate_clean']}",
                  f"- 定位错误(事件级, 全量): {data['location_error_events']}/{data['location_validated_events'] + data['location_error_events']} 率 {data['location_error_event_rate_all']}；(已清洗): {data['location_error_events_clean']}/{data['location_validated_events_clean'] + data['location_error_events_clean']} 率 {data['location_error_event_rate_clean']}",
-                 f"- 无归属(指标相关): {data['unattributed_event_count']}；非指标噪声: {data['nonmetric_unattributed_count']}；归属歧义: {data['ambiguous_event_count']}（均不进入已清洗指标）",
+                 f"- 事件四态(互斥): resolved={data['resolved_event_count']} / ambiguous={data['ambiguous_event_count']} / unattributed={data['unattributed_event_count']} / excluded={data['excluded_event_count']}",
+                 f"- 非指标噪声: 无归属 {data['nonmetric_unattributed_count']} / 歧义 {data['nonmetric_ambiguous_count']}；歧义 issue_id: {data['ambiguous_issue_count']}（不生成 finding）",
                  f"- 孤儿 issue_id: {data['orphan_count']}；字段冲突 finding: {data['conflicted_finding_count']}（不进入具体规则指标）；复核冲突: {len(data['review_conflicts'])}", '',
                  '| rule_id | findings | 已复核 | 确认率 | 误报率 | 定位错误率 |',
                  '|---|---:|---:|---:|---:|---:|']

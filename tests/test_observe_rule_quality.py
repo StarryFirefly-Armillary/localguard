@@ -88,9 +88,9 @@ def test_missing_fields_are_na_not_zero(tmp_path):
 def test_location_error_event_level_and_scanner_only_completed(tmp_path):
     logs = [
         (30645, {'event': 'location_validated', 'issue_id': 'ISSUE-1'}),
-        (30646, {'event': 'location_rejected', 'negative_sample': {'id': 'ISSUE-1'}}),
-        (30647, {'event': 'scanner_completed', 'scanner': 'gitleaks', 'status': 'failed'}),
-        (30648, {'event': 'scanner_completed', 'scanner': 'patterns', 'status': 'completed'}),
+        (30646, {'event': 'location_rejected', 'audit_id': 'A', 'negative_sample': {'id': 'ISSUE-1'}}),
+        (30647, {'event': 'scanner_completed', 'audit_id': 'A', 'scanner': 'gitleaks', 'status': 'failed'}),
+        (30648, {'event': 'scanner_completed', 'audit_id': 'A', 'scanner': 'patterns', 'status': 'completed'}),
         (30649, {'event': 'model_triage_failed', 'audit_id': 'A'}),
         (30650, {'event': 'audit_failed', 'audit_id': 'A'}),
     ]
@@ -106,7 +106,7 @@ def test_location_error_event_level_and_scanner_only_completed(tmp_path):
     # Scanner failures: only scanner_completed with status != completed.
     assert d['scanner_completed_events'] == 2
     assert d['scanner_failures'] == 1 and d['scanner_failure_rate_all'] == 0.5
-    assert d['scanner_failure_rate_clean'] == 'N/A'  # scanner events lack audit_id -> unattributed
+    assert d['scanner_failure_rate_clean'] == 0.5  # scanner events now resolved by audit_id
     # model_triage_failed/audit_failed reported separately, never in scanner rate.
     assert d['other_pipeline_failures'] == {'model_triage_failed': 1, 'audit_failed': 1}
 
@@ -118,10 +118,11 @@ def test_unattributed_rejection_and_no_scanner_events_are_na(tmp_path):
     ]
     db = make_db(tmp_path, logs, [job('A', [issue('ISSUE-1')])])
     d = summarize(collect(db, 30644))
-    assert d['location_rejected_unattributed'] == 1
-    assert d['location_error_event_rate_all'] == 0.5
-    # validated resolves to a job -> clean denominator exists; rejected does not
-    assert d['location_error_event_rate_clean'] == 0.0
+    # Unattributed rejection is NOT in resolved-only event metrics.
+    assert d['location_error_events'] == 0
+    assert d['location_validated_events'] == 1
+    assert d['location_error_event_rate_all'] == 0.0
+    assert d['unattributed_event_count'] == 1
     assert d['scanner_completed_events'] == 0
     assert d['scanner_failures'] == 0 and d['scanner_failure_rate'] == 'N/A'
 
@@ -208,10 +209,10 @@ def test_review_matches_audit_id_and_ignores_unreviewed(tmp_path):
     db = make_db(tmp_path, logs, jobs,
                  [('A2', iid, 'confirmed'), ('A1', iid, 'unreviewed')])
     d = summarize(collect(db, 30644))
-    # Issue hash repeats across audits: collect all non-excluded audits;
-    # A1 unreviewed ignored, A2 confirmed is a valid decision.
-    assert d['reviewed_total'] == 1 and d['unreviewed_total'] == 0
-    assert d['rules'][0]['human_confirmation_rate'] == 1.0
+    # Event has no session -> 2 audit candidates (A1/A2) -> ambiguous,
+    # so NO finding is produced and no review is counted.
+    assert d['reviewed_total'] == 0 and d['distinct_real_issue_ids'] == 0
+    assert iid in d['ambiguous_issue_ids']
 
 
 def test_review_confirmed_and_false_positive_count_as_reviewed(tmp_path):
@@ -263,9 +264,12 @@ def test_orphan_log_issue_not_counted_as_finding(tmp_path):
     logs = [(30645, {'event': 'location_validated', 'issue_id': 'ISSUE-ORPHAN'}),
             (30646, {'event': 'location_validated', 'issue_id': 'ISSUE-REAL'})]
     db = make_db(tmp_path, logs, [job('A', [issue('ISSUE-REAL')])])
-    d = summarize(collect(db, 30644))
+    c = collect(db, 30644)
+    d = summarize(c)
     assert d['distinct_real_issue_ids'] == 1
-    assert 'ISSUE-ORPHAN' in d['orphan_issue_ids'] and d['orphan_count'] == 1
+    # Orphan issue has no job candidate -> event unattributed, not a resolved orphan
+    assert d['orphan_count'] == 0
+    assert any('ISSUE-ORPHAN' in (e.get('issue_ids') or []) for e in c['unattributed_events'])
     assert 'ISSUE-ORPHAN' not in {f['issue_id'] for f in collect(db, 30644)['findings'].values()}
 
 
@@ -296,8 +300,8 @@ def test_unattributed_events_excluded_from_clean_metrics(tmp_path):
     ]
     db = make_db(tmp_path, logs, [job('A1', [issue('I1')])])
     d = summarize(collect(db, 30644))
-    assert d['scanner_completed_events'] == 2 and d['scanner_failures'] == 1
-    assert d['scanner_failure_rate_all'] == 0.5
+    assert d['scanner_completed_events'] == 1 and d['scanner_failures'] == 0
+    assert d['scanner_failure_rate_all'] == 0.0
     # Unattributed failed event is NOT in clean metrics.
     # Explicit audit_id event is clean; pointer-less event is unattributed.
     assert d['scanner_completed_events_clean'] == 1 and d['scanner_failures_clean'] == 0
@@ -393,7 +397,8 @@ def test_ambiguous_issue_audit_is_not_force_excluded(tmp_path):
     assert len(c['ambiguous_events']) == 1
     assert set(c['ambiguous_events'][0]['candidate_audits']) == {
         'REAL', '65dcb65d663c47ebb900d70a4f706e59'}
-    assert c['findings'][iid]['audit_ids'] == ['REAL']  # SMOKE not in occurrences
+    assert iid not in c['findings']  # ambiguous event generates no finding
+    assert iid in c['ambiguous_issue_ids']
 
 
 def test_structured_value_beats_fallback(tmp_path):
@@ -510,8 +515,8 @@ def test_two_nonexcluded_audits_same_issue_are_ambiguous(tmp_path):
     assert not c['exclusions']  # neither audit excluded
     d = summarize(c)
     # Ambiguous metric event is kept unclean -> clean denominator excludes it.
-    assert d['location_validated_events'] == 1
-    assert d['location_validated_events_clean'] == 0
+    assert d['location_validated_events'] == 0  # ambiguous event not resolved
+    assert d['ambiguous_event_count'] == 1
 
 
 def test_full_history_explicit_scanner_audit_ids_are_clean(tmp_path):
@@ -546,7 +551,7 @@ def test_raw_session_single_job_resolves_uniquely(tmp_path):
 def test_shared_base_session_union_not_overwritten(tmp_path):
     # Two jobs share base session 'BASE' with different audit ids: union, not
     # overwrite; an event carrying BASE alone is ambiguous.
-    logs = [(30645, {'event': 'location_validated', 'issue_id': 'I1', 'session': 'BASE'})]
+    logs = [(30645, {'event': 'location_validated', 'session': 'BASE'})]  # no issue -> no disambiguation
     db = make_db(tmp_path, logs, [job('A1', [issue('I1')]), job('A2', [issue('I2')])])
     import sqlite3 as _sq
     con = _sq.connect(db)
@@ -554,8 +559,8 @@ def test_shared_base_session_union_not_overwritten(tmp_path):
     con.execute("UPDATE jobs SET session='BASE:A2' WHERE id='A2'")
     con.commit(); con.close()
     c = collect(db, 30644)
-    amb = [e for e in c['ambiguous_events'] if e.get('resolved_by') == 'session']
-    assert amb and set(amb[0]['candidate_audits']) == {'A1', 'A2'}
+    amb = [e for e in c['ambiguous_events'] if 'A1' in e.get('candidate_audits', [])]
+    assert amb and set(amb[0]['candidate_audits']) >= {'A1', 'A2'}
 
 
 def test_base_colon_audit_session_exact_hit(tmp_path):
@@ -602,3 +607,88 @@ def test_candidate_audits_never_contain_raw_session(tmp_path):
     for e in c['ambiguous_events']:
         assert 'BASE' not in e['candidate_audits']
         assert all(':' not in a for a in e['candidate_audits'])
+
+
+def test_event_states_are_mutually_exclusive(tmp_path):
+    # Four events: excluded / resolved / ambiguous / unattributed.
+    logs = [
+        (30645, {'event': 'scanner_completed', 'audit_id': '65dcb65d663c47ebb900d70a4f706e59',
+                 'scanner': 'semgrep', 'status': 'completed'}),
+        (30646, {'event': 'scanner_completed', 'audit_id': 'A1',
+                 'scanner': 'patterns', 'status': 'completed'}),
+        (30647, {'event': 'location_validated', 'session': 'SHARED'}),
+        (30648, {'event': 'location_rejected', 'reason': 'bad'}),
+    ]
+    db = make_db(tmp_path, logs,
+                 [job('A1', [issue('I1')]),
+                  job('65dcb65d663c47ebb900d70a4f706e59', [issue('I-S')])])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='SHARED:A1' WHERE id='A1'")
+    con.execute("UPDATE jobs SET session='SHARED:65dcb65d663c47ebb900d70a4f706e59' WHERE id='65dcb65d663c47ebb900d70a4f706e59'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    d = summarize(c)
+    amb_ids = {e['log_id'] for e in c['ambiguous_events']}
+    unatt_ids = {e['log_id'] for e in c['unattributed_events']}
+    exc_ids = {e['log_id'] for e in c['exclusions'] if e.get('reason') == 'excluded_audit_event'}
+    res_ids = {30646}
+    assert not (amb_ids & unatt_ids) and not (amb_ids & exc_ids) and not (unatt_ids & exc_ids)
+    assert 30645 in exc_ids and 30646 in res_ids and 30647 in amb_ids and 30648 in unatt_ids
+    assert d['resolved_event_count'] == 1 and d['ambiguous_event_count'] == 1
+    assert d['unattributed_event_count'] == 1 and d['excluded_event_count'] == 1
+
+
+def test_session_ambiguous_but_issue_unique_resolves(tmp_path):
+    # Session has two candidates; issue reverse-lookup points to only A1.
+    iid = 'I-DISAMB'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid, 'session': 'SHARED'})]
+    db = make_db(tmp_path, logs, [job('A1', [issue(iid)]), job('A2', [issue('I2')])])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='SHARED:A1' WHERE id='A1'")
+    con.execute("UPDATE jobs SET session='SHARED:A2' WHERE id='A2'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    d = summarize(c)
+    assert not c['ambiguous_events'] and not c['unattributed_events']
+    assert iid in c['findings'] and c['findings'][iid]['audit_ids'] == ['A1']
+    assert d['resolved_event_count'] == 1
+
+
+def test_ambiguous_event_never_creates_finding_or_review(tmp_path):
+    iid = 'I-AMB-FIND'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid, 'session': 'SHARED'})]
+    db = make_db(tmp_path, logs, [job('A1', [issue(iid)]), job('A2', [issue(iid)])],
+                 [( 'A1', iid, 'confirmed' )])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='SHARED:A1' WHERE id='A1'")
+    con.execute("UPDATE jobs SET session='SHARED:A2' WHERE id='A2'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    d = summarize(c)
+    assert iid not in c['findings']
+    assert iid in d['ambiguous_issue_ids']
+    assert d['reviewed_total'] == 0 and d['distinct_real_issue_ids'] == 0
+    assert d['remaining_to_target'] == 50  # ambiguous does not count toward 50
+
+
+def test_shared_base_session_with_smoke_cannot_force_real(tmp_path):
+    # Same issue in REAL and SMOKE, event has only shared base session:
+    # ambiguous, no REAL finding, no forced attribution to REAL.
+    iid = 'I-REAL-SMOKE'
+    logs = [(30645, {'event': 'location_validated', 'issue_id': iid, 'session': 'BASE'})]
+    db = make_db(tmp_path, logs,
+                 [job('REAL', [issue(iid)]),
+                  job('65dcb65d663c47ebb900d70a4f706e59', [issue(iid)])])
+    import sqlite3 as _sq
+    con = _sq.connect(db)
+    con.execute("UPDATE jobs SET session='BASE:REAL' WHERE id='REAL'")
+    con.execute("UPDATE jobs SET session='BASE:SMOKE' WHERE id='65dcb65d663c47ebb900d70a4f706e59'")
+    con.commit(); con.close()
+    c = collect(db, 30644)
+    d = summarize(c)
+    assert iid not in c['findings']
+    assert iid in d['ambiguous_issue_ids']
+    assert d['distinct_real_issue_ids'] == 0
