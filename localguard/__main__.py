@@ -3,10 +3,48 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+from pathlib import Path
 import sys
 import uuid
 
 from .config import Config
+from . import diagnostics
+
+
+def selected_config_path(args):
+    """Prefer the doctor subcommand flag; fall back to global config or env."""
+    return getattr(args, 'doctor_config', None) or args.config or os.environ.get('LOCALGUARD_CONFIG')
+
+
+def load_config(args):
+    """Load config; doctor stays read-only, audit preflights writable data_dir."""
+    config_path = selected_config_path(args)
+    if args.command == 'doctor':
+        return diagnostics.load_config_readonly(config_path)
+
+    override = getattr(args, 'data_dir', None)
+    try:
+        if override:
+            directory = Path(override).resolve(strict=False)
+            if directory.exists() and not directory.is_dir():
+                raise diagnostics.DiagnosticsError(diagnostics.writable_error(
+                    directory, config_path=config_path, target=getattr(args, 'target', None)))
+            directory.mkdir(parents=True, exist_ok=True)
+            diagnostics.ensure_writable_data_dir(
+                directory, config_path=config_path, target=getattr(args, 'target', None))
+            os.environ['LOCALGUARD_DATA_DIR'] = str(directory)
+        config = Config.load(args.config)
+        if args.command == 'audit':
+            diagnostics.ensure_writable_data_dir(
+                config.data_dir, config_path=config_path, target=getattr(args, 'target', None))
+        return config
+    except (OSError, ValueError) as exc:
+        if args.command == 'audit':
+            shown = Path(override).resolve(strict=False) if override else Path('(configured data_dir)')
+            raise diagnostics.DiagnosticsError(diagnostics.writable_error(
+                shown, config_path=config_path, target=getattr(args, 'target', None))) from exc
+        raise
 
 
 def main():
@@ -24,10 +62,15 @@ def main():
     audit.add_argument('--scanners',nargs='+',choices=['patterns','semgrep','gitleaks','gosec','cppcheck','pip-audit','grype'])
     audit.add_argument('--no-dependencies',action='store_true')
     audit.add_argument('--model-tier',choices=['rules','4gb','8gb'])
-    sub.add_parser('doctor',help='Inspect offline dependencies and configured paths without modifying them')
+    audit.add_argument('--data-dir',help='Explicit writable working directory; overrides config data_dir and never falls back')
+    doctor = sub.add_parser('doctor',help='Inspect offline dependencies and configured paths without modifying them')
+    doctor.add_argument('--config',dest='doctor_config',default=argparse.SUPPRESS,
+                        help='Trusted local JSON configuration (alternative to the global --config)')
+    doctor.add_argument('--json',action='store_true',help='Emit machine-readable JSON')
+    doctor.add_argument('--probe-write',action='store_true',help='Create and delete one temporary file in data_dir to verify write access')
     args = parser.parse_args()
     try:
-        config = Config.load(args.config)
+        config = load_config(args)
         if args.command=='mcp':
             from .mcp_server import serve
             asyncio.run(serve(config))
@@ -37,22 +80,14 @@ def main():
             uvicorn.run(create_app(config),host='127.0.0.1',port=args.port or config.port)
         elif args.command=='audit':
             asyncio.run(run_audit(config,args))
-        else:
-            from .parser import GRAMMARS,SourceParser
-            from pathlib import Path
-            grammars = {}
-            for language in sorted(set(GRAMMARS.values())):
-                try:
-                    SourceParser().parse(language,b'')
-                    grammars[language] = 'available'
-                except Exception as exc:
-                    grammars[language] = str(exc)
-            print(json.dumps({'offline':config.offline,'allowed_roots':[str(r) for r in config.allowed_roots],
-                'data_dir':str(config.data_dir),'scanners':{s:config.binaries.get(s,'unavailable') for s in ['semgrep','gitleaks','gosec','cppcheck','pip-audit','grype']},
-                'grammars':grammars,'model_tier':config.model_tier,'model_exists':bool(config.model_path and Path(config.model_path).is_file()),
-                'keep_model_resident':config.keep_model_resident,
-                'max_model_explanations':config.max_model_explanations},ensure_ascii=False,indent=2))
-    except (ValueError,OSError) as exc:
+        elif args.command == 'doctor':
+            report = diagnostics.collect(config, probe=args.probe_write,
+                                         config_path=selected_config_path(args))
+            if args.json:
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+            else:
+                print(diagnostics.format_text(report))
+    except (ValueError, OSError, diagnostics.DiagnosticsError) as exc:
         print(f'LocalGuard: {exc}',file=sys.stderr)
         raise SystemExit(1)
 
