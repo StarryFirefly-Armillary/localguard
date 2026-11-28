@@ -121,6 +121,15 @@
         <summary>本地运行环境 <span id="tool-count" class="label-note">待连接</span></summary>
         <p>允许访问的根目录</p><ul id="allowed-roots" class="allowed-roots"><li>等待服务返回配置</li></ul>
         <p id="runtime-note" class="field-help">扫描器不可用、超时或覆盖受限，不等于扫描通过。配置由服务端管理。</p>
+        <div id="diagnostics-panel" class="diagnostics-panel" aria-label="环境状态">
+          <div class="diagnostics-row"><span>data_dir</span><span id="diag-data-dir" class="mono">连接后加载</span></div>
+          <div class="diagnostics-row"><span>数据库</span><span id="diag-database" class="mono">连接后加载</span></div>
+          <div class="diagnostics-row"><span>模型</span><span id="diag-model" class="mono">连接后加载</span></div>
+          <div class="diagnostics-row"><span>扫描器</span><span id="diag-scanners" class="mono">连接后加载</span></div>
+          <p id="diag-hint" class="field-help" hidden></p>
+          <button id="diag-probe" class="button secondary" type="button" disabled>测试写入权限</button>
+          <p id="diag-probe-result" class="field-help" role="status" hidden></p>
+        </div>
       </details>
 
       <section class="log-console" id="log-console" aria-labelledby="log-console-title">

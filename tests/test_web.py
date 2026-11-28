@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from localguard import diagnostics
 from localguard.config import Config
 from localguard.model import LocalModel, ModelUnavailable
 from localguard.web import create_app
@@ -287,3 +288,104 @@ def test_shared_registry_csrf_and_source(tmp_path):
         assert client.post('/api/tools/view_file',json={'path':str(file)},headers={**headers,'origin':'https://evil.example'}).status_code==403
         assert client.get('/api/bootstrap',headers={'host':'evil.example'}).status_code==400
         assert client.post('/api/tools/run_scanner',json={'scanner':'shell','target':str(root)},headers=headers).json()['isError']
+
+
+@pytest.fixture
+def diagnostics_client(tmp_path):
+    app = create_app(Config(allowed_roots=[tmp_path], data_dir=tmp_path/'state'))
+    with TestClient(app) as client:
+        token = client.get('/api/bootstrap').json()['csrf_token']
+        client.headers['x-csrf-token'] = token
+        yield client, app.state.registry.config.data_dir
+
+
+def test_diagnostics_get_is_readonly_unknown_and_shows_guidance(diagnostics_client):
+    client, data_dir = diagnostics_client
+    report = client.get('/api/diagnostics').json()
+    assert report['kind'] == 'localguard_doctor'
+    assert report['write_probe'] is None
+    assert report['write_status'] == 'unknown'
+    assert report['model']['started'] is False
+    assert 'system temporary working directory' in report['writable_hint']
+    assert 'audit --data-dir' in report['writable_hint']
+    assert data_dir.exists()
+    assert not list(data_dir.glob('.localguard-doctor-*'))
+
+
+def test_os_access_true_but_probe_fails_is_not_assumed_writable(diagnostics_client, monkeypatch):
+    client, data_dir = diagnostics_client
+    monkeypatch.setattr(diagnostics.os, 'access', lambda *args, **kwargs: True)
+    monkeypatch.setattr(diagnostics, 'probe_write', lambda directory: {
+        'ok': False, 'path': str(directory), 'error': 'permission denied by test',
+        'residual_path': str(directory / '.localguard-doctor-stuck'),
+    })
+
+    report = client.get('/api/diagnostics').json()
+    assert report['write_status'] == 'unknown'
+    assert 'system temporary working directory' in report['writable_hint']
+    assert report['data_dir']['readonly']['os_access_writable'] is True
+    assert not list(data_dir.glob('.localguard-doctor-*'))
+
+    failed = client.post('/api/diagnostics/probe-write', json={}).json()
+    assert failed['ok'] is False
+    assert failed['write_status'] == 'verified_unwritable'
+    assert failed['error'] == 'permission denied by test'
+    assert failed['residual_path'].endswith('.localguard-doctor-stuck')
+    assert 'system temporary working directory' in failed['hint']
+
+
+def test_diagnostics_probe_write_success_and_failure(diagnostics_client, monkeypatch):
+    client, data_dir = diagnostics_client
+    ok = client.post('/api/diagnostics/probe-write', json={}).json()
+    assert ok['ok'] is True
+    assert ok['write_status'] == 'verified_writable'
+    assert ok['hint'] is None
+    assert not list(data_dir.glob('.localguard-doctor-*'))
+
+    monkeypatch.setattr(diagnostics, 'probe_write', lambda directory: {
+        'ok': False, 'path': str(directory), 'error': 'cleanup blocked',
+        'residual_path': str(directory / '.localguard-doctor-stuck'),
+    })
+    failed = client.post('/api/diagnostics/probe-write', json={}).json()
+    assert failed['ok'] is False
+    assert failed['write_status'] == 'verified_unwritable'
+    assert failed['residual_path'].endswith('.localguard-doctor-stuck')
+    assert 'system temporary working directory' in failed['hint']
+
+
+def test_diagnostics_view_model_uses_probe_state_not_os_access():
+    common = {
+        'data_dir': {'configured_path': 'C:/work/state'},
+        'database': {'path': 'C:/work/state/state.sqlite3', 'readonly': {'exists': True},
+                     'integrity_check': {'result': 'ok'}},
+        'model': {'tier': '8gb', 'status': 'ok', 'started': False},
+        'scanners': {'semgrep': {'exists': True, 'executable': True},
+                     'gitleaks': {'exists': False, 'executable': False}},
+    }
+    unknown = {**common, 'write_status': 'unknown',
+               'writable_hint': 'Use a system temporary working directory'}
+    unwritable = {**common, 'write_status': 'verified_unwritable',
+                  'writable_hint': 'Failed. Use a system temporary working directory'}
+    writable = {**common, 'write_status': 'verified_writable', 'writable_hint': None}
+    elements = {
+        'dataDir': {'textContent': ''}, 'database': {'textContent': ''},
+        'model': {'textContent': ''}, 'scanners': {'textContent': ''},
+        'hint': {'textContent': '', 'hidden': True}, 'probe': {'disabled': True},
+    }
+    result = run_ui(
+        'return {views:[diagnosticsViewModel(input.unknown), diagnosticsViewModel(input.unwritable), '
+        'diagnosticsViewModel(input.writable)], elementView: applyDiagnostics(input.unknown, input.elements), '
+        'elements: input.elements};',
+        {'unknown': unknown, 'unwritable': unwritable, 'writable': writable, 'elements': elements},
+    )
+    views = result['views']
+    assert views[0]['writeStatus'] == 'unknown'
+    assert views[0]['hint'].startswith('尚未验证写入权限；如果测试失败，请使用系统临时工作库')
+    assert 'Use a system temporary working directory' in views[0]['hint']
+    assert views[1]['writeStatus'] == 'verified_unwritable'
+    assert 'Failed.' in views[1]['hint']
+    assert views[2]['writeStatus'] == 'verified_writable'
+    assert views[2]['hint'] == '写入权限已通过显式探针验证。'
+    assert result['elementView']['model'] == '8gb · ok · started=false'
+    assert result['elements']['hint']['hidden'] is False
+    assert result['elements']['probe']['disabled'] is False

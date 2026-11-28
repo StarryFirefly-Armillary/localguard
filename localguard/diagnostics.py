@@ -13,6 +13,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import uuid
 from dataclasses import MISSING, fields
 from urllib.parse import quote
 
@@ -204,27 +205,29 @@ def probe_write(directory: Path) -> dict:
     """Create and delete one temporary file; report the real write capability."""
     if not directory.is_dir():
         return {'ok': False, 'path': str(directory), 'error': 'data_dir is not a directory'}
-    created: Path | None = None
+    # A single explicit create avoids NamedTemporaryFile's repeated random-name
+    # retries, which can appear to hang on ACL-denied directories.
+    created = directory / f'.localguard-doctor-{uuid.uuid4().hex}'
     problems: list[str] = []
     try:
-        with tempfile.NamedTemporaryFile(prefix='.localguard-doctor-', dir=directory, delete=False) as stream:
-            created = Path(stream.name)
+        with created.open('xb') as stream:
             stream.write(b'doctor-write-probe')
     except OSError as exc:
         problems.append(f'create/write failed: {exc}')
     finally:
-        if created is not None:
-            try:
-                created.unlink()
-            except OSError as exc:
-                problems.append(f'cleanup failed: {exc}')
+        try:
+            created.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            problems.append(f'cleanup failed: {exc}')
     if problems:
         result = {
             'ok': False,
             'path': str(directory),
             'error': ' | '.join(problems)[:600],
         }
-        if created is not None:
+        if created.exists():
             result['residual_path'] = str(created)
         return result
     return {'ok': True, 'path': str(directory), 'created_and_removed': str(created)}

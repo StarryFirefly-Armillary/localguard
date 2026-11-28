@@ -22,6 +22,7 @@
     treeRoot: '', treeEntries: [], treeEpoch: 0, treeBusy: false, collapsedFolders: new Set(),
     preview: null, previewEpoch: 0, previewBusy: false, fileHashes: new Map(), changedFiles: new Set(),
     history: [], chatEpoch: 0, imageFile: null, imageUrl: '',
+    diagnostics: null,
   };
 
   function node(tag, className, text) {
@@ -48,6 +49,104 @@
   }
 
   function announce(message) { $('announcement').textContent = message; }
+
+  function diagnosticsElements() {
+    return {
+      dataDir: $('diag-data-dir'), database: $('diag-database'), model: $('diag-model'),
+      scanners: $('diag-scanners'), hint: $('diag-hint'), probe: $('diag-probe'),
+    };
+  }
+
+  function diagnosticsViewModel(report) {
+    const db = report?.database || {};
+    const model = report?.model || {};
+    const scanners = report?.scanners || {};
+    const entries = Object.entries(scanners);
+    const available = entries.filter(([, item]) => item && item.exists && item.executable).map(([name]) => name);
+    const unavailable = entries.filter(([, item]) => !item || !item.exists || !item.executable).map(([name]) => name);
+    const writeStatus = ['unknown', 'verified_writable', 'verified_unwritable'].includes(report?.write_status)
+      ? report.write_status : 'unknown';
+    let hint = '';
+    if (writeStatus === 'unknown') {
+      hint = `尚未验证写入权限；如果测试失败，请使用系统临时工作库。${text(report?.writable_hint, '')}`;
+    } else if (writeStatus === 'verified_unwritable') {
+      hint = text(report?.writable_hint || report?.hint, '');
+    } else {
+      hint = '写入权限已通过显式探针验证。';
+    }
+    return {
+      dataDir: text(report?.data_dir?.configured_path, '未知'),
+      database: `${text(db.path, '未知')} · ${db.readonly?.exists ? '存在' : '不存在'} · integrity=${text(db.integrity_check?.result, 'N/A')}`,
+      model: `${text(model.tier, '未知')} · ${text(model.status, '未知')} · started=false`,
+      scanners: `可用 ${available.join('、') || '无'}；不可用 ${unavailable.join('、') || '无'}`,
+      writeStatus,
+      hint,
+    };
+  }
+
+  function applyDiagnostics(report, elements) {
+    const view = diagnosticsViewModel(report);
+    elements.dataDir.textContent = view.dataDir;
+    elements.database.textContent = view.database;
+    elements.model.textContent = view.model;
+    elements.scanners.textContent = view.scanners;
+    elements.hint.textContent = view.hint;
+    elements.hint.hidden = !view.hint;
+    if (elements.probe) elements.probe.disabled = false;
+    return view;
+  }
+
+  async function loadDiagnostics() {
+    if (!$('diag-data-dir')) return;
+    const elements = diagnosticsElements();
+    elements.probe.disabled = true;
+    try {
+      const report = await request('/api/diagnostics');
+      state.diagnostics = report;
+      applyDiagnostics(report, elements);
+    } catch (error) {
+      elements.dataDir.textContent = '诊断不可用';
+      elements.database.textContent = '—';
+      elements.model.textContent = '—';
+      elements.scanners.textContent = '—';
+      elements.hint.textContent = readable(error);
+      elements.hint.hidden = false;
+    }
+  }
+
+  async function probeDiagnostics() {
+    const result = $('diag-probe-result');
+    const button = $('diag-probe');
+    if (!result || !button || button.disabled) return;
+    button.disabled = true;
+    result.hidden = false;
+    result.textContent = '正在测试写入权限…';
+    try {
+      const response = await request('/api/diagnostics/probe-write', { method: 'POST', body: {}, timeout: 15000 });
+      if (state.diagnostics) {
+        state.diagnostics.write_status = response.write_status;
+        if (response.hint) state.diagnostics.writable_hint = response.hint;
+        applyDiagnostics(state.diagnostics, diagnosticsElements());
+      }
+      if (response.ok) {
+        result.textContent = `写入测试通过，临时文件已清理：${text(response.created_and_removed, '未知路径')}`;
+      } else {
+        const residual = response.residual_path ? `residual_path：${response.residual_path}` : 'residual_path：无残留文件';
+        result.textContent = `写入测试失败：${text(response.error, '未知错误')}；${residual}。${text(response.hint, '')}`;
+      }
+    } catch (error) {
+      const message = readable(error);
+      if (state.diagnostics) {
+        state.diagnostics.write_status = 'verified_unwritable';
+        state.diagnostics.writable_hint = message;
+        applyDiagnostics(state.diagnostics, diagnosticsElements());
+      }
+      result.textContent = `写入测试失败：${message}`;
+    } finally {
+      button.disabled = false;
+      announce(result.textContent);
+    }
+  }
 
   function alertIn(id, message, action, label = '重试') {
     const container = $(id);
@@ -218,6 +317,7 @@
       $('allowed-roots').replaceChildren(...(roots.length ? roots.map((root) => node('li', '', text(root))) : [node('li', '', '服务未配置可访问的根目录')]));
       $('tool-count').textContent = `${Array.isArray(data.tools) ? data.tools.length : 0} 个注册工具`;
       $('runtime-note').textContent = [...state.environmentWarnings, '扫描器不可用、超时或覆盖受限，不等于扫描通过。配置由服务端管理。'].join(' ');
+      loadDiagnostics();
       state.bootstrapped = true;
       setConnection(true);
       alertIn('connection-alert', '');
@@ -1245,6 +1345,7 @@
   $('review-filter').addEventListener('change', renderIssues);
   $('triage-filter').addEventListener('change', renderIssues);
   $('refresh-tree').addEventListener('click', loadTree);
+  $('diag-probe').addEventListener('click', probeDiagnostics);
   $('toggle-tree').addEventListener('click', () => {
     const hidden = !$('file-tree-pane').hidden;
     $('file-tree-pane').hidden = hidden;

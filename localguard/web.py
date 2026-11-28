@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import Config
+from . import diagnostics
 from .model import ModelUnavailable
 from .registry import ToolRegistry
 from .reporting import export_report
@@ -102,6 +103,24 @@ def create_app(config: Config | None = None):
                       'model_tier':registry.config.model_tier,'offline':registry.config.offline},'tools':registry.describe()})
         response.set_cookie('localguard_session',sid,httponly=True,samesite='strict')
         return response
+
+    @app.get('/api/diagnostics')
+    async def environment_diagnostics(request: Request):
+        session(request)
+        report = diagnostics.collect(registry.config)
+        # Static attributes and os.access() are not proof of real write access.
+        # The only trustworthy state comes from the explicit write probe.
+        report['write_status'] = 'unknown'
+        report['writable_hint'] = diagnostics.writable_error(registry.config.data_dir)
+        return report
+
+    @app.post('/api/diagnostics/probe-write')
+    async def environment_probe_write(request: Request):
+        session(request)
+        result = diagnostics.probe_write(registry.config.data_dir)
+        result['write_status'] = 'verified_writable' if result.get('ok') else 'verified_unwritable'
+        result['hint'] = None if result.get('ok') else diagnostics.writable_error(registry.config.data_dir)
+        return result
 
     @app.post('/api/tools/{name}')
     async def tools(name: str, request: Request):

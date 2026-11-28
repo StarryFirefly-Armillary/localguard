@@ -130,6 +130,12 @@ summary:hover { color: var(--text); }
 .runtime-details p { margin-top: 10px; color: var(--muted); }
 .allowed-roots { list-style: none; padding: 0; margin: 6px 0; font-size: 10px; font-family: Consolas, monospace; color: var(--subtle); }
 .allowed-roots li { padding: 4px 0; overflow-wrap: anywhere; }
+.diagnostics-panel { border-top: 1px solid var(--line-soft); margin-top: 12px; padding-top: 10px; }
+.diagnostics-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; padding: 3px 0; font-size: 10px; }
+.diagnostics-row > span:first-child { color: var(--muted); }
+.diagnostics-row > span:last-child { overflow-wrap: anywhere; }
+.diagnostics-panel .button { margin-top: 8px; width: 100%; }
+.diagnostics-panel #diag-hint, .diagnostics-panel #diag-probe-result { display: block; }
 .sidebar-footnote { display: none; }
 
 /* ---- Live audit log console (stays in flow, moves down when menus open) ---- */
