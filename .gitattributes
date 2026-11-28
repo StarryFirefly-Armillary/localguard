@@ -1,0 +1,3 @@
+tests/fixtures/rule_eval/** text eol=lf
+scripts/evaluate_rule_candidates.py text eol=lf
+tests/test_rule_candidate_eval.py text eol=lf

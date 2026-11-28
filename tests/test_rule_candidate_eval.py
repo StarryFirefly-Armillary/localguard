@@ -177,6 +177,33 @@ def _run(tmp_path: Path, fixtures: dict, **kwargs):
     )
 
 
+def test_tracked_fixture_bytes_match_labels_and_are_lf():
+    attrs = (ROOT / '.gitattributes').read_text(encoding='utf-8')
+    for line in ('tests/fixtures/rule_eval/** text eol=lf',
+                 'scripts/evaluate_rule_candidates.py text eol=lf',
+                 'tests/test_rule_candidate_eval.py text eol=lf'):
+        assert line in attrs
+
+    root = ROOT / 'tests' / 'fixtures' / 'rule_eval'
+    representative = json.loads((root / 'representative_labeled.json').read_text(encoding='utf-8'))['findings']
+    offline = json.loads((root / 'offline_labeled.json').read_text(encoding='utf-8'))
+    records = [json.loads(line) for line in (root / 'gold_records.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
+    recovery = json.loads((root / 'gold_recovery.json').read_text(encoding='utf-8'))
+
+    for item in representative + offline:
+        data = (root / item['canonical_location']).read_bytes()
+        assert b'\r\n' not in data
+        assert _sha(data) == item['file_sha256']
+    for record in records:
+        data = (root / record['finding']['path']).read_bytes()
+        assert b'\r\n' not in data
+        assert _sha(data) == record['provenance']['materialized_source_sha256']
+    for entry in recovery['entries']:
+        assert _sha((root / entry['recovered_file']).read_bytes()) == entry['expected_sha256']
+    for source in (root / 'sources').glob('*.py'):
+        assert b'\r\n' not in source.read_bytes()
+
+
 def test_tp_fp_fn_and_recomputable_raw(tmp_path):
     fixtures = _make_fixtures(tmp_path)
     report = _run(tmp_path, fixtures)
