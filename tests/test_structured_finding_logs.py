@@ -178,3 +178,53 @@ async def test_model_triage_verdicts_carry_structured_issue_identity(tmp_path, m
             assert v['model_tier'] == '8gb'
     finally:
         await registry.close()
+
+
+def test_location_validated_event_shape_engine_equals_scanner():
+    """Regression: location_validated (consumed by observation stats) must carry
+    engine == scanner and the full structured identity, from real finding shape.
+    """
+    from localguard.reporting import finding_log_fields_for_validated_location
+
+    issue = {
+        'id': 'ISSUE-engine-1',
+        'title': 'reverse shell',
+        'locations': [{'path': 'src/app.py', 'line': 42}],
+        'evidence': [{'tool': 'semgrep', 'rule_id': 'lg.ext.sqli', 'raw_ref': '#/results/3'},
+                     {'tool': 'view_file', 'range': [40, 45]}],
+    }
+    fields = finding_log_fields_for_validated_location(issue)
+    assert fields['engine'] == fields['scanner'] == 'semgrep'
+    assert fields['issue_id'] == 'ISSUE-engine-1'
+    assert fields['rule_id'] == 'lg.ext.sqli'
+    assert fields['path'] == 'src/app.py' and fields['line'] == 42
+    assert not str(fields['rule_id']).startswith('#/')
+    assert 'model_tier' not in fields  # never substitute tier for engine
+
+
+@pytest.mark.anyio
+async def test_rules_audit_location_validated_logs_engine(tmp_path):
+    """Integration: a real rules-only audit emits location_validated with
+    engine == scanner and no regression of identity fields."""
+    root = tmp_path / 'repo'
+    root.mkdir()
+    shutil.copyfile(FIXTURES / 'vulnerable.py', root / 'vulnerable.py')
+    registry = ToolRegistry(Config(allowed_roots=[root], data_dir=tmp_path / 'state',
+                                   model_tier='rules'))
+    try:
+        report = await rules_audit(registry, root)
+        assert report['issues'], 'fixture must yield at least one finding'
+        with registry.store.connect() as db:
+            events = [json.loads(p) for (p,) in db.execute('SELECT payload FROM logs').fetchall()]
+        validated = [e for e in events if e.get('event') == 'location_validated'
+                     and e.get('issue_id') in {i['id'] for i in report['issues']}]
+        assert validated, 'location_validated must be logged for findings'
+        for e in validated:
+            assert all(k in e for k in FIELDS), e
+            assert e['engine'] == e['scanner']
+            assert e['scanner'] in ('patterns', 'semgrep', 'gitleaks', 'gosec', 'cppcheck', 'pip-audit', 'grype')
+            assert e['rule_id'] and not str(e['rule_id']).startswith('#/')
+            assert e['path'] and isinstance(e['line'], int)
+            assert 'model_tier' not in e
+    finally:
+        await registry.close()

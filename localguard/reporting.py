@@ -15,6 +15,16 @@ def snippet_hash(text):
     return hashlib.sha256(text.encode('utf-8')).hexdigest()
 
 
+def finding_log_fields_for_validated_location(issue: dict) -> dict:
+    """Structured identity for location_validated events, derived from the
+    finding itself (evidence tool/rule_id + first location). `engine` is the
+    detection engine and MUST equal `scanner`; never a model tier or repo name.
+    Pure helper so the event shape can be unit-tested without an audit run.
+    """
+    from .engine import finding_log_fields
+    return finding_log_fields(issue, None)
+
+
 def read_evidence_metadata(arguments, result):
     args = {'path_hash': snippet_hash(arguments['path'])}
     args.update({key: arguments[key] for key in ('start_line', 'end_line') if key in arguments})
@@ -55,7 +65,13 @@ class Validator:
         except (EvidenceError, BoundaryError) as exc:
             self.store.log(event='location_rejected',session=session,validation='rejected',reason=str(exc),negative_sample=issue)
             raise EvidenceError(str(exc)) from exc
-        self.store.log(event='location_validated',session=session,validation='passed',issue_id=issue['id'],locations=issue['locations'])
+        # Structured finding identity for read-only observation stats. `engine`
+        # is the detection engine (== scanner), never the model tier or a
+        # repository name. Values come from the finding's own evidence and
+        # location; no source text or secret values are logged.
+        self.store.log(event='location_validated', session=session,
+                       validation='passed', locations=issue['locations'],
+                       **finding_log_fields_for_validated_location(issue))
         return issue
 
 
