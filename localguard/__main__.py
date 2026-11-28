@@ -11,6 +11,11 @@ import uuid
 from .config import Config
 from . import diagnostics
 
+DATA_DIR_HELP = (
+    'Explicit writable working directory; overrides config data_dir and never falls back. '
+    'If blocked, use a system temporary workspace such as localguard-work in the OS temp directory.'
+)
+
 
 def selected_config_path(args):
     """Prefer the doctor subcommand flag; fall back to global config or env."""
@@ -18,32 +23,34 @@ def selected_config_path(args):
 
 
 def load_config(args):
-    """Load config; doctor stays read-only, audit preflights writable data_dir."""
+    """Load config; doctor stays read-only, audit/ui/mcp preflight writable data_dir."""
     config_path = selected_config_path(args)
     if args.command == 'doctor':
         return diagnostics.load_config_readonly(config_path)
 
+    command = args.command
+    target = getattr(args, 'target', None)
     override = getattr(args, 'data_dir', None)
     try:
         if override:
             directory = Path(override).resolve(strict=False)
             if directory.exists() and not directory.is_dir():
                 raise diagnostics.DiagnosticsError(diagnostics.writable_error(
-                    directory, config_path=config_path, target=getattr(args, 'target', None)))
+                    directory, config_path=config_path, target=target, command=command))
             directory.mkdir(parents=True, exist_ok=True)
             diagnostics.ensure_writable_data_dir(
-                directory, config_path=config_path, target=getattr(args, 'target', None))
+                directory, config_path=config_path, target=target, command=command)
             os.environ['LOCALGUARD_DATA_DIR'] = str(directory)
         config = Config.load(args.config)
-        if args.command == 'audit':
+        if command in ('audit', 'ui', 'mcp'):
             diagnostics.ensure_writable_data_dir(
-                config.data_dir, config_path=config_path, target=getattr(args, 'target', None))
+                config.data_dir, config_path=config_path, target=target, command=command)
         return config
     except (OSError, ValueError) as exc:
-        if args.command == 'audit':
+        if command in ('audit', 'ui', 'mcp'):
             shown = Path(override).resolve(strict=False) if override else Path('(configured data_dir)')
             raise diagnostics.DiagnosticsError(diagnostics.writable_error(
-                shown, config_path=config_path, target=getattr(args, 'target', None))) from exc
+                shown, config_path=config_path, target=target, command=command)) from exc
         raise
 
 
@@ -53,16 +60,18 @@ def main():
     parser = argparse.ArgumentParser(prog='localguard',description='Local evidence-first security audit and native MCP server')
     parser.add_argument('--config',help='Trusted local JSON configuration (or LOCALGUARD_CONFIG)')
     sub = parser.add_subparsers(dest='command',required=True)
-    sub.add_parser('mcp',help='Run the stdio MCP server; stdout is protocol-only')
+    mcp = sub.add_parser('mcp',help='Run the stdio MCP server; stdout is protocol-only')
+    mcp.add_argument('--data-dir',help=DATA_DIR_HELP)
     ui = sub.add_parser('ui',help='Run the loopback-only web UI')
     ui.add_argument('--port',type=int)
+    ui.add_argument('--data-dir',help=DATA_DIR_HELP)
     audit = sub.add_parser('audit',help='Audit through the same registry and print JSON')
     audit.add_argument('target')
     audit.add_argument('--depth',choices=['quick','standard','deep'],default='standard')
     audit.add_argument('--scanners',nargs='+',choices=['patterns','semgrep','gitleaks','gosec','cppcheck','pip-audit','grype'])
     audit.add_argument('--no-dependencies',action='store_true')
     audit.add_argument('--model-tier',choices=['rules','4gb','8gb'])
-    audit.add_argument('--data-dir',help='Explicit writable working directory; overrides config data_dir and never falls back')
+    audit.add_argument('--data-dir',help=DATA_DIR_HELP)
     doctor = sub.add_parser('doctor',help='Inspect offline dependencies and configured paths without modifying them')
     doctor.add_argument('--config',dest='doctor_config',default=argparse.SUPPRESS,
                         help='Trusted local JSON configuration (alternative to the global --config)')

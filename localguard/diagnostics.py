@@ -234,24 +234,30 @@ def probe_write(directory: Path) -> dict:
 
 
 def writable_error(data_dir: Path, *, config_path: str | None = None,
-                   target: str | None = None) -> str:
+                   target: str | None = None, command: str = 'audit') -> str:
     temp = os.environ.get('TEMP') or os.environ.get('TMPDIR') or tempfile.gettempdir()
     work = str(Path(temp) / 'localguard-work')
     config = config_path or '<config path>'
-    audit_target = target or '<target>'
+    prefix = f'python -m localguard --config "{config}"'
+    if command == 'ui':
+        example = f'{prefix} ui --data-dir "{work}"'
+    elif command == 'mcp':
+        example = f'{prefix} mcp --data-dir "{work}"'
+    else:
+        example = f'{prefix} audit --data-dir "{work}" "{target or "<target>"}"'
     return (
         f'data_dir is not writable: {data_dir}. '
         'LocalGuard will not silently fall back to a production store. '
-        f'Use a system temporary working directory, for example: '
-        f'python -m localguard --config "{config}" audit --data-dir "{work}" "{audit_target}"'
+        f'Use a system temporary working directory, for example: {example}'
     )
 
 
 def ensure_writable_data_dir(directory: Path, *, config_path: str | None = None,
-                             target: str | None = None) -> None:
+                             target: str | None = None, command: str = 'audit') -> None:
     result = probe_write(directory)
     if not result['ok']:
-        raise DiagnosticsError(writable_error(directory, config_path=config_path, target=target))
+        raise DiagnosticsError(writable_error(
+            directory, config_path=config_path, target=target, command=command))
     database = directory / 'state.sqlite3'
     for path in (database, Path(str(database) + '-wal'), Path(str(database) + '-shm')):
         if not path.exists():
@@ -261,7 +267,7 @@ def ensure_writable_data_dir(directory: Path, *, config_path: str | None = None,
                 pass
         except OSError as exc:
             raise DiagnosticsError(writable_error(
-                directory, config_path=config_path, target=target)) from exc
+                directory, config_path=config_path, target=target, command=command)) from exc
 
 
 def collect(config: Config, *, probe: bool = False, config_path: str | None = None) -> dict:
