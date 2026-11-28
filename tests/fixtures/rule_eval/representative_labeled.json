@@ -1,0 +1,125 @@
+{
+  "findings": [
+    {
+      "issue_id": "ISSUE-0ac8978268f9",
+      "rule_id": "generic-api-key",
+      "scanner": "gitleaks",
+      "path": "sources/forced_gitleaks_tp.py",
+      "line": 2,
+      "human_decision": "confirmed",
+      "canonical_location": "sources/forced_gitleaks_tp.py",
+      "file_sha256": "2a6ca61a487a50bb807731c42634fb154137c6a4e3803daa6fff5eed28ebbaf5",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-1dd606e7aa89",
+      "rule_id": "lg.ext.ssrf-urllib-user-input",
+      "scanner": "semgrep",
+      "path": "sources/forced_cross_1.py",
+      "line": 2,
+      "human_decision": "confirmed",
+      "canonical_location": "sources/forced_cross_1.py",
+      "file_sha256": "49471ba107fa27c3362176f344dd4fe1404bccd7522e5c4487867ecd5a815ffe",
+      "scope": "cross_function_required"
+    },
+    {
+      "issue_id": "ISSUE-6cd074dc5d2f",
+      "rule_id": "lg.ext.ssrf-urllib-user-input",
+      "scanner": "semgrep",
+      "path": "sources/forced_cross_2.py",
+      "line": 2,
+      "human_decision": "confirmed",
+      "canonical_location": "sources/forced_cross_2.py",
+      "file_sha256": "49471ba107fa27c3362176f344dd4fe1404bccd7522e5c4487867ecd5a815ffe",
+      "scope": "cross_function_required"
+    },
+    {
+      "issue_id": "ISSUE-da900649d0e9",
+      "rule_id": "lg.ext.weak-crypto-random",
+      "scanner": "semgrep",
+      "path": "sources/forced_weak_random.py",
+      "line": 2,
+      "human_decision": "confirmed",
+      "canonical_location": "sources/forced_weak_random.py",
+      "file_sha256": "31ff169b7137fbc24ad015df68bdcecd9013e7c40aeb38ae664de334fa7592e3",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-7349f3ca73f2",
+      "rule_id": "lg.ext.weak-crypto-ssl-verify-disabled",
+      "scanner": "semgrep",
+      "path": "sources/forced_tls_1.py",
+      "line": 2,
+      "human_decision": "confirmed",
+      "canonical_location": "sources/forced_tls_1.py",
+      "file_sha256": "0d0ed27cf3ab9bd86a5af73aa4189ae4e1a6fd4367b13dc57a91eaa296f20390",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-df00926eb0a6",
+      "rule_id": "lg.ext.weak-crypto-ssl-verify-disabled",
+      "scanner": "semgrep",
+      "path": "sources/forced_tls_2.py",
+      "line": 2,
+      "human_decision": "confirmed",
+      "canonical_location": "sources/forced_tls_2.py",
+      "file_sha256": "0d0ed27cf3ab9bd86a5af73aa4189ae4e1a6fd4367b13dc57a91eaa296f20390",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-SEMGREP-FP",
+      "rule_id": "lg.ext.ssrf-urllib-user-input",
+      "scanner": "semgrep",
+      "path": "sources/semgrep_fp.py",
+      "line": 2,
+      "human_decision": "false_positive",
+      "canonical_location": "sources/semgrep_fp.py",
+      "file_sha256": "49471ba107fa27c3362176f344dd4fe1404bccd7522e5c4487867ecd5a815ffe",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-SEMGREP-FN",
+      "rule_id": "lg.ext.command-injection-subprocess-shell",
+      "scanner": "semgrep",
+      "path": "sources/semgrep_fn.py",
+      "line": 2,
+      "human_decision": "confirmed",
+      "canonical_location": "sources/semgrep_fn.py",
+      "file_sha256": "fa0dace0a762b783232d19cef10f4a4816436e877430025537b971a0bbb005fc",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-SEMGREP-TN",
+      "rule_id": "lg.ext.command-injection-subprocess-shell",
+      "scanner": "semgrep",
+      "path": "sources/semgrep_tn.py",
+      "line": 2,
+      "human_decision": "false_positive",
+      "canonical_location": "sources/semgrep_tn.py",
+      "file_sha256": "fa0dace0a762b783232d19cef10f4a4816436e877430025537b971a0bbb005fc",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-REP-GL-FP",
+      "rule_id": "generic-api-key",
+      "scanner": "gitleaks",
+      "path": "sources/gitleaks_fp.py",
+      "line": 2,
+      "human_decision": "false_positive",
+      "canonical_location": "sources/gitleaks_fp.py",
+      "file_sha256": "2a6ca61a487a50bb807731c42634fb154137c6a4e3803daa6fff5eed28ebbaf5",
+      "scope": "file_local"
+    },
+    {
+      "issue_id": "ISSUE-REP-GL-TN",
+      "rule_id": "generic-api-key",
+      "scanner": "gitleaks",
+      "path": "sources/gitleaks_tn.py",
+      "line": 2,
+      "human_decision": "false_positive",
+      "canonical_location": "sources/gitleaks_tn.py",
+      "file_sha256": "d16dc3250b25677588a3b7f726529b40389c190e73ef0f29824c8cf95ede9488",
+      "scope": "file_local"
+    }
+  ]
+}

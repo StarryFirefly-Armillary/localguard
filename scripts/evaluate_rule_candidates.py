@@ -24,13 +24,7 @@ from typing import Callable, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 RULE_DIR = ROOT / 'localguard' / 'rules'
-DEFAULT_REPRESENTATIVE = (ROOT / '.localguard/observation/representative_collection_v3/representative_review_labeled.json').resolve()
-DEFAULT_OFFLINE = (ROOT / '.localguard/observation/review_27/review_27_labeled.json').resolve()
-DEFAULT_GOLD_RECORDS = (ROOT / '.workbuddy/training_data/gold_v1/records.jsonl').resolve()
-DEFAULT_GOLD_RECOVERY = (ROOT / '.localguard/observation/gold_v1_recovery_net2/report.json').resolve()
-DEFAULT_GOLD_LOCAL_RECOVERY = (ROOT / '.localguard/observation/gold_v1_recovery/recovery_manifest.json').resolve()
-DEFAULT_SCOPE_MAP = (ROOT / '.localguard/observation/rule_candidate_eval/scope_manifest.json').resolve()
-DEFAULT_OUT = (ROOT / '.localguard/observation/rule_candidate_eval/report.json').resolve()
+SMOKE_FIXTURES = ROOT / 'tests' / 'fixtures' / 'rule_eval'
 
 POSITIVE_LABELS = frozenset({'confirmed', 'likely_true', 'true_positive', 'tp'})
 NEGATIVE_LABELS = frozenset({'false_positive', 'likely_false', 'benign', 'fp', 'true_negative', 'tn'})
@@ -202,6 +196,14 @@ def deduplicate_cases(summary_cases: list[Case], reference_cases: list[Case]) ->
         duplicate_row_count=len(duplicates),
         duplicate_ids=duplicates,
     )
+
+
+def portable_path(path: Path, anchor: Path = ROOT) -> str:
+    """Render a path relative to an anchor, never as a machine-local absolute path."""
+    try:
+        return path.resolve().relative_to(anchor.resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return path.name
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -403,7 +405,7 @@ def load_labeled_cohort(path: Path, cohort: str, scope_map: dict[str, str] | Non
     return cases
 
 
-def _recovery_map(report: object, *, kind: str) -> dict[str, tuple[Path, str]]:
+def _recovery_map(report: object, base: Path, *, kind: str) -> dict[str, tuple[Path, str]]:
     if not isinstance(report, dict):
         raise EvalInputError(f'Invalid recovery report: {kind}')
     entries = report.get('entries')
@@ -419,8 +421,11 @@ def _recovery_map(report: object, *, kind: str) -> dict[str, tuple[Path, str]]:
         recovered = entry.get('recovered_file')
         if not recovered:
             continue
+        source = Path(recovered)
+        if not source.is_absolute():
+            source = base / source
         expected = entry.get('expected_sha256') or entry.get('actual_sha256') or entry.get('pinned_sha256') or ''
-        mapping[str(entry['record_id'])] = (Path(recovered), str(expected))
+        mapping[str(entry['record_id'])] = (source, str(expected))
     return mapping
 
 
@@ -429,7 +434,7 @@ def load_gold_cases(
     recovery_path: Path,
     representative_cases: list[Case],
     scope_map: dict[str, str] | None = None,
-    local_recovery_path: Path = DEFAULT_GOLD_LOCAL_RECOVERY,
+    local_recovery_path: Path | None = None,
 ) -> tuple[list[Case], list[Case]]:
     if not records_path.is_file():
         raise EvalInputError(f'Missing gold_v1 records: {records_path}')
@@ -461,9 +466,12 @@ def load_gold_cases(
     if len(command) != 1:
         raise EvalInputError(f'gold_v1 command-injection forced regression: expected 1 record, got {len(command)}')
 
-    recovery = _recovery_map(load_json_file(recovery_path), kind='network')
-    if local_recovery_path.is_file():
-        recovery.update(_recovery_map(load_json_file(local_recovery_path), kind='local'))
+    recovery = _recovery_map(load_json_file(recovery_path), recovery_path.parent, kind='network')
+    if local_recovery_path is not None:
+        if not local_recovery_path.is_file():
+            raise EvalInputError(f'Missing gold_v1 local recovery report: {local_recovery_path}')
+        recovery.update(_recovery_map(load_json_file(local_recovery_path),
+                                      local_recovery_path.parent, kind='local'))
 
     cases: list[Case] = []
     all_gold = [record for values in by_rule.values() for record in values] + command
@@ -627,6 +635,29 @@ def run_scanner_command(command: list[str], scratch: Path, timeout: int) -> tupl
     if completed.returncode not in (0, 1):
         raise EvalInputError(f'Scanner exit code {completed.returncode}: {command[0]}')
     return completed.stdout, completed.returncode, len(completed.stderr or b'')
+
+
+def smoke_runner(scanner: str, root: Path, configs: list[Path], scratch: Path) -> tuple[bytes, int, int]:
+    """Deterministic offline scanner seam for tracked minimal fixtures."""
+    hits: list[dict] = []
+    for path in sorted(root.rglob('*')):
+        if not path.is_file():
+            continue
+        rule = ''
+        for index, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+            if line.startswith('# rule='):
+                rule = line.split('=', 1)[1].strip()
+            elif line.startswith('HIT ') and rule:
+                relative = path.relative_to(root).as_posix()
+                if scanner == 'semgrep':
+                    hits.append({'check_id': rule, 'path': relative, 'start': {'line': index}})
+                else:
+                    hits.append({'RuleID': rule, 'File': relative, 'StartLine': index})
+    if scanner == 'semgrep':
+        payload = {'results': hits, 'errors': []}
+    else:
+        payload = hits
+    return json.dumps(payload, ensure_ascii=True).encode('utf-8'), 0, 0
 
 
 def parse_raw_hits(scanner: str, stdout: bytes, *, scan_root: Path | None = None) -> tuple[list[dict], int]:
@@ -826,6 +857,7 @@ def evaluate(
     offline_path: Path,
     gold_records_path: Path,
     gold_recovery_path: Path,
+    gold_local_recovery_path: Path | None = None,
     scope_map_path: Path | None = None,
     semgrep_candidates: list[str] | None = None,
     gitleaks_candidates: list[str] | None = None,
@@ -845,7 +877,8 @@ def evaluate(
     summary_rows = load_labeled_cohort(representative_path, 'representative50', scope_map)
     summary_rows += load_labeled_cohort(offline_path, 'offline27', scope_map)
     gold_cases, forced_references = load_gold_cases(
-        gold_records_path, gold_recovery_path, summary_rows, scope_map)
+        gold_records_path, gold_recovery_path, summary_rows, scope_map,
+        local_recovery_path=gold_local_recovery_path)
     summary_rows += gold_cases
     expected = expected_input_rows if expected_input_rows is not None else len(summary_rows) + len(forced_references)
     if len(summary_rows) + len(forced_references) != expected:
@@ -889,10 +922,11 @@ def evaluate(
             run_results.append(RunResult(
                 label=variant.label,
                 scanner=variant.scanner,
-                configs=[{'path': str(config), 'sha256': sha256_config(config)} for config in variant.configs],
+                configs=[{'path': portable_path(config), 'sha256': sha256_config(config)}
+                         for config in variant.configs],
                 stdout_sha256=sha256_bytes(stdout),
                 raw_sha256=sha256_bytes(raw_bytes),
-                raw_file=str(raw_file),
+                raw_file=portable_path(raw_file, output_path.parent),
                 hits=hits,
                 unmatched_raw_count=sum(1 for hit in hits if hit['path'] not in known),
                 scanner_error_count=errors,
@@ -901,14 +935,19 @@ def evaluate(
             ))
 
     inputs = {
-        'representative50': {'path': str(representative_path), 'sha256': sha256_file(representative_path)},
-        'offline27': {'path': str(offline_path), 'sha256': sha256_file(offline_path)},
-        'gold_v1_records': {'path': str(gold_records_path), 'sha256': sha256_file(gold_records_path)},
-        'gold_v1_recovery': {'path': str(gold_recovery_path), 'sha256': sha256_file(gold_recovery_path)},
+        'representative50': {'path': portable_path(representative_path), 'sha256': sha256_file(representative_path)},
+        'offline27': {'path': portable_path(offline_path), 'sha256': sha256_file(offline_path)},
+        'gold_v1_records': {'path': portable_path(gold_records_path), 'sha256': sha256_file(gold_records_path)},
+        'gold_v1_recovery': {'path': portable_path(gold_recovery_path), 'sha256': sha256_file(gold_recovery_path)},
     }
+    if gold_local_recovery_path is not None:
+        inputs['gold_v1_local_recovery'] = {
+            'path': portable_path(gold_local_recovery_path),
+            'sha256': sha256_file(gold_local_recovery_path),
+        }
     if scope_map_path is not None:
         inputs['evaluation_scope_manifest'] = {
-            'path': str(scope_map_path), 'sha256': sha256_file(scope_map_path)}
+            'path': portable_path(scope_map_path), 'sha256': sha256_file(scope_map_path)}
     limitations = [
         'Materialization mode is per-file: only cases explicitly scoped file_local are evaluated.',
         'Only the two confirmed cross-function cases are scoped cross_function_required and excluded from TP/FP/FN/TN; all other SSRF cases remain file_local.',
@@ -979,36 +1018,82 @@ def evaluate(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--representative', type=Path, default=DEFAULT_REPRESENTATIVE)
-    parser.add_argument('--offline', type=Path, default=DEFAULT_OFFLINE)
-    parser.add_argument('--gold-records', type=Path, default=DEFAULT_GOLD_RECORDS)
-    parser.add_argument('--gold-recovery', type=Path, default=DEFAULT_GOLD_RECOVERY)
-    parser.add_argument('--scope-manifest', type=Path, default=DEFAULT_SCOPE_MAP)
-    parser.add_argument('--semgrep-config', action='append', default=[], help='Candidate Semgrep config; may repeat. Production baseline is always run.')
-    parser.add_argument('--gitleaks-config', action='append', default=[], help='Candidate Gitleaks config; may repeat. Production baseline is always run.')
+    parser.add_argument('--smoke', action='store_true',
+                        help='Run only tracked minimal fixtures with a deterministic offline scanner seam.')
+    parser.add_argument('--representative', type=Path)
+    parser.add_argument('--offline', type=Path)
+    parser.add_argument('--gold-records', type=Path)
+    parser.add_argument('--gold-recovery', type=Path)
+    parser.add_argument('--gold-local-recovery', type=Path)
+    parser.add_argument('--scope-manifest', type=Path)
+    parser.add_argument('--semgrep-config', action='append', default=[],
+                        help='Candidate Semgrep config; may repeat. Production baseline is always run.')
+    parser.add_argument('--gitleaks-config', action='append', default=[],
+                        help='Candidate Gitleaks config; may repeat. Production baseline is always run.')
     parser.add_argument('--semgrep-binary')
     parser.add_argument('--gitleaks-binary')
-    parser.add_argument('--out', type=Path, default=DEFAULT_OUT)
-    parser.add_argument('--raw-dir', type=Path, default=None)
+    parser.add_argument('--out', type=Path)
+    parser.add_argument('--raw-dir', type=Path)
     parser.add_argument('--timeout', type=int, default=300)
     args = parser.parse_args(argv)
-    raw_dir = args.raw_dir or args.out.parent / 'raw'
-    report = evaluate(
-        representative_path=args.representative.resolve(strict=False),
-        offline_path=args.offline.resolve(strict=False),
-        gold_records_path=args.gold_records.resolve(strict=False),
-        gold_recovery_path=args.gold_recovery.resolve(strict=False),
-        scope_map_path=args.scope_manifest.resolve(strict=False),
-        semgrep_candidates=args.semgrep_config,
-        gitleaks_candidates=args.gitleaks_config,
-        semgrep_binary=args.semgrep_binary,
-        gitleaks_binary=args.gitleaks_binary,
-        output_path=args.out.resolve(strict=False),
-        raw_dir=raw_dir.resolve(strict=False),
-        timeout=args.timeout,
-    )
+
+    explicit_inputs = {
+        '--representative': args.representative,
+        '--offline': args.offline,
+        '--gold-records': args.gold_records,
+        '--gold-recovery': args.gold_recovery,
+        '--gold-local-recovery': args.gold_local_recovery,
+        '--scope-manifest': args.scope_manifest,
+        '--semgrep-config': args.semgrep_config or None,
+        '--gitleaks-config': args.gitleaks_config or None,
+        '--semgrep-binary': args.semgrep_binary,
+        '--gitleaks-binary': args.gitleaks_binary,
+    }
+    if args.smoke:
+        supplied = [name for name, value in explicit_inputs.items() if value]
+        if supplied:
+            parser.error(f'--smoke uses only tracked fixtures; remove: {", ".join(supplied)}')
+        out = args.out or (Path(tempfile.mkdtemp(prefix='localguard-rule-eval-smoke-')) / 'report.json')
+        raw_dir = args.raw_dir or out.parent / 'raw'
+        report = evaluate(
+            representative_path=SMOKE_FIXTURES / 'representative_labeled.json',
+            offline_path=SMOKE_FIXTURES / 'offline_labeled.json',
+            gold_records_path=SMOKE_FIXTURES / 'gold_records.jsonl',
+            gold_recovery_path=SMOKE_FIXTURES / 'gold_recovery.json',
+            scope_map_path=SMOKE_FIXTURES / 'scope_manifest.json',
+            output_path=out.resolve(strict=False),
+            raw_dir=raw_dir.resolve(strict=False),
+            timeout=args.timeout,
+            runner=smoke_runner,
+        )
+    else:
+        missing = [name for name, value in explicit_inputs.items()
+                   if name in {'--representative', '--offline', '--gold-records',
+                               '--gold-recovery', '--scope-manifest'} and not value]
+        if args.out is None:
+            missing.append('--out')
+        if missing:
+            parser.error(f'missing required full-evaluation arguments: {", ".join(missing)}')
+        out = args.out
+        raw_dir = args.raw_dir or out.parent / 'raw'
+        report = evaluate(
+            representative_path=args.representative.resolve(strict=False),
+            offline_path=args.offline.resolve(strict=False),
+            gold_records_path=args.gold_records.resolve(strict=False),
+            gold_recovery_path=args.gold_recovery.resolve(strict=False),
+            gold_local_recovery_path=(args.gold_local_recovery.resolve(strict=False)
+                                      if args.gold_local_recovery else None),
+            scope_map_path=args.scope_manifest.resolve(strict=False),
+            semgrep_candidates=args.semgrep_config,
+            gitleaks_candidates=args.gitleaks_config,
+            semgrep_binary=args.semgrep_binary,
+            gitleaks_binary=args.gitleaks_binary,
+            output_path=out.resolve(strict=False),
+            raw_dir=raw_dir.resolve(strict=False),
+            timeout=args.timeout,
+        )
     print(json.dumps({
-        'report': str(args.out),
+        'report': str(out),
         'input_row_count': report['input_row_count'],
         'unique_case_count': report['unique_case_count'],
         'duplicate_row_count': report['duplicate_row_count'],

@@ -1,0 +1,35 @@
+[
+  {
+    "issue_id": "ISSUE-OFF-TP",
+    "rule_id": "lg.ext.ssrf-urllib-user-input",
+    "scanner": "semgrep",
+    "path": "sources/off_semgrep_tp.py",
+    "line": 2,
+    "human_decision": "confirmed",
+    "canonical_location": "sources/off_semgrep_tp.py",
+    "file_sha256": "49471ba107fa27c3362176f344dd4fe1404bccd7522e5c4487867ecd5a815ffe",
+    "scope": "file_local"
+  },
+  {
+    "issue_id": "ISSUE-OFF-GL-FP",
+    "rule_id": "generic-api-key",
+    "scanner": "gitleaks",
+    "path": "sources/off_gitleaks_fp.py",
+    "line": 2,
+    "human_decision": "false_positive",
+    "canonical_location": "sources/off_gitleaks_fp.py",
+    "file_sha256": "2a6ca61a487a50bb807731c42634fb154137c6a4e3803daa6fff5eed28ebbaf5",
+    "scope": "file_local"
+  },
+  {
+    "issue_id": "ISSUE-REP-GL-FP",
+    "rule_id": "generic-api-key",
+    "scanner": "gitleaks",
+    "path": "sources/gitleaks_fp.py",
+    "line": 2,
+    "human_decision": "false_positive",
+    "canonical_location": "sources/gitleaks_fp.py",
+    "file_sha256": "2a6ca61a487a50bb807731c42634fb154137c6a4e3803daa6fff5eed28ebbaf5",
+    "scope": "file_local"
+  }
+]

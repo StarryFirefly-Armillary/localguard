@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import socket
 import sqlite3
 import sys
 from pathlib import Path
@@ -188,7 +190,7 @@ def test_tp_fp_fn_and_recomputable_raw(tmp_path):
     assert report['duplicate_row_count'] == 6
     assert 'overall' not in baseline['metrics']
 
-    raw_text = Path(baseline['raw_file']).read_bytes()
+    raw_text = (tmp_path / 'out' / baseline['raw_file']).read_bytes()
     assert _sha(raw_text) == baseline['raw_sha256']
     hits = json.loads(raw_text)
     recomputed = {'TP': 0, 'FP': 0, 'FN': 0, 'TN': 0}
@@ -380,6 +382,55 @@ def test_missing_duplicate_and_illegal_path_fail(tmp_path):
     bad = _write_json(tmp_path / 'escape.json', document)
     with pytest.raises(ev.EvalInputError, match='Path traversal'):
         ev.load_labeled_cohort(bad, 'representative50')
+
+
+def test_smoke_runs_in_clean_temp_dir_without_store_network_or_local_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    def no_store(*args, **kwargs):
+        raise AssertionError('smoke must not open a database')
+
+    def no_process(*args, **kwargs):
+        raise AssertionError('smoke must not spawn Semgrep/Gitleaks')
+
+    def no_network(*args, **kwargs):
+        raise AssertionError('smoke must not access the network')
+
+    monkeypatch.setattr(sqlite3, 'connect', no_store)
+    monkeypatch.setattr(ev.subprocess, 'run', no_process)
+    monkeypatch.setattr(socket.socket, 'connect', no_network)
+
+    out = tmp_path / 'clean' / 'report.json'
+    raw_dir = out.parent / 'raw'
+    assert ev.main(['--smoke', '--out', str(out), '--raw-dir', str(raw_dir)]) == 0
+
+    report = json.loads(out.read_text(encoding='utf-8'))
+    assert report['input_row_count'] == 37
+    assert report['unique_case_count'] == 30
+    assert report['duplicate_row_count'] == 7
+    assert len(report['forced_references']) == 6
+
+    semgrep = next(v for v in report['variants'] if v['label'] == 'semgrep-baseline')
+    assert semgrep['metrics']['cohorts']['gold_v1']['supported_case_count'] == 5
+    assert set(semgrep['metrics']['unsupported_case_ids']) == set(ev.CONFIRMED_CROSS_FUNCTION_IDS)
+    for variant in report['variants']:
+        raw = (out.parent / variant['raw_file']).read_bytes()
+        assert _sha(raw) == variant['raw_sha256']
+
+    texts = [out.read_text(encoding='utf-8'), out.with_suffix('.md').read_text(encoding='utf-8')]
+    for variant in report['variants']:
+        texts.append((out.parent / variant['raw_file']).read_text(encoding='utf-8'))
+    for text in texts:
+        assert str(ROOT) not in text
+        assert str(tmp_path) not in text
+        assert not re.search(r'[A-Za-z]:[\\/]', text)
+        for forbidden in ('HIT', 'NO_HIT', '# rule=', 'deterministic fixture'):
+            assert forbidden not in text
+
+
+def test_full_mode_requires_explicit_inputs():
+    with pytest.raises(SystemExit):
+        ev.main([])
 
 
 def test_evaluator_never_opens_production_store(tmp_path, monkeypatch):
